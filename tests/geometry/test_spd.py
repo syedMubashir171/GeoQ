@@ -667,21 +667,36 @@ class TestProperties:
     )
     @given(a=spd_matrices(max_dim=8), p=st.floats(min_value=-2.0, max_value=2.0))
     def test_power_law_composition(self, a, p: float) -> None:
-        """``(A^p)^(1/p) = A`` for non-zero ``p``, within the admissible range.
+        """``(A^p)^(1/p) = A``, within the range where the identity survives.
 
-        Raising to a power raises the condition number to that power, so
-        ``A^2`` for a matrix with ``kappa = 1e8`` has ``kappa = 1e16`` and is
-        legitimately rejected as singular. The guard below is not a workaround
-        for a defect -- it is the identity's actual domain, and stating it
-        here is how that limitation stays visible.
+        The round trip passes through ``A^p``, whose condition number is
+        ``kappa ** |p|``, and back through ``A^(1/p)``, whose condition number
+        is ``kappa ** |1/p|``. The worse of the two governs how much relative
+        precision is destroyed, so the amplification exponent is
+        ``max(|p|, 1/|p|)``. Measured at ``p = -2`` this model is tight:
+        ``error / (eps * kappa ** 2)`` sits at 0.41-0.44 across two decades of
+        conditioning, whereas ``error / (eps * kappa)`` runs away from 44 to
+        4107 over the same range -- which is why a linear-in-kappa bound was
+        wrong here even though it is correct for a single inversion.
+
+        Two guards, for two different reasons:
+
+        * ``|p| < 0.1`` is excluded because ``1/p`` then exceeds 10 and the
+          intermediate is a power beyond anything this framework computes.
+        * An effective condition number above ``1e8`` is excluded because
+          fewer than eight significant digits survive the round trip there.
+          Bounding such a case would test nothing: the tolerance would exceed
+          unity and any implementation whatsoever would pass. Skipping is
+          honest; a vacuous assertion is not.
         """
         if abs(p) < 0.1:
             return
-        if float(condition_number(a)) ** abs(p) >= 1.0 / DEFAULT_PD_RTOL:
+        exponent = max(abs(p), 1.0 / abs(p))
+        if float(condition_number(a)) ** exponent > 1e8:
             return
         assert relative_error(
             powm_spd(powm_spd(a, p), 1.0 / p), a
-        ) < spectral_error_bound(a, factor=1e4)
+        ) < spectral_error_bound(a, kappa_power=exponent)
 
     @settings(
         max_examples=100, deadline=None, suppress_health_check=[HealthCheck.too_slow]

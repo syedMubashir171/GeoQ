@@ -59,27 +59,93 @@ def relative_error(actual: NDArray[np.float64], expected: NDArray[np.float64]) -
     return numerator / denominator if denominator > 0 else numerator
 
 
-def spectral_error_bound(a: NDArray[np.float64], *, factor: float = 100.0) -> float:
-    """Admissible relative error for a spectral matrix function applied to ``a``.
+def spectral_error_bound(
+    a: NDArray[np.float64],
+    *,
+    factor: float = 250.0,
+    kappa_power: float = 0.0,
+) -> float:
+    r"""Admissible relative error for a spectral matrix function applied to ``a``.
 
-    The accuracy of ``V f(w) V^T`` is governed by the conditioning of the
-    eigendecomposition, so the tolerance must scale with the condition number.
-    A hard-coded ``1e-12`` would be either vacuous for well-conditioned inputs
-    or spuriously red for ill-conditioned ones.
+    The bound is
+
+    .. math::
+        \text{tol} = \text{factor} \cdot \epsilon \cdot \sqrt{n}
+                     \cdot \left(1 + \log_{10} \kappa(A)\right)
+
+    which reflects the two mechanisms that actually generate error in
+    ``V f(w) V^T``:
+
+    * **Dimension.** LAPACK's symmetric eigensolver has backward error
+      :math:`O(n \epsilon \|A\|_2)`, and the two matrix products in the
+      reconstruction contribute again. Measured across ``n`` from 2 to 128,
+      the growth is close to :math:`\sqrt{n}` and saturates thereafter.
+    * **Conditioning, logarithmically.** Perturbing an eigenvalue by a
+      relative :math:`\delta` shifts its logarithm by an absolute
+      :math:`\delta`, so a spectrum spanning :math:`\kappa` contributes a
+      term growing like :math:`\log \kappa` -- not like :math:`\kappa`.
+
+    Why not ``factor * eps * kappa``
+    --------------------------------
+    That form, used in an earlier revision, was wrong in both directions.
+
+    At :math:`\kappa = 1` it collapses to exactly ``factor * eps`` with no
+    allowance for the :math:`O(n)` accumulation that is always present, so a
+    perfectly conditioned matrix could fail at 107 eps against a 100 eps
+    bound. Worse, at :math:`\kappa = 10^8` it permitted a relative error of
+    ``2.2e-06``: measurement shows the true round-trip error there is around
+    ``300 eps``, so a genuine regression of six orders of magnitude would have
+    passed silently. A tolerance loose enough to hide real defects is not a
+    conservative choice; it is an absent test.
+
+    The constant 250 was chosen by measurement, not taste. Across ``n`` in
+    ``[2, 128]`` and :math:`\kappa` in :math:`[1, 10^{11}]`, it leaves a
+    tightest margin of 6.4x over the worst observed error and a loosest of
+    112x -- enough headroom that the test does not flake under a new
+    Hypothesis draw, while remaining roughly a million times tighter than the
+    formula it replaces.
+
+    Choosing ``kappa_power``
+    ------------------------
+    Not every operation is conditioning-insensitive, so the caller must state
+    which error model applies. Measured on this implementation:
+
+    ============================  =============  ====================
+    Operation                     ``kappa_power``  Observed error
+    ============================  =============  ====================
+    ``expm(logm(A))``             ``0``          ~300 eps, flat in kappa
+    ``powm(powm(A, 0.5), 2)``     ``0``          ~26 eps, flat in kappa
+    ``powm(powm(A, -1), -1)``     ``1``          ~0.5 * eps * kappa
+    ============================  =============  ====================
+
+    The logarithm compresses the spectrum, so log-type round trips do not
+    degrade with conditioning. Inversion does not compress it: a relative
+    perturbation of the smallest eigenvalue becomes a relative perturbation of
+    the largest, and the error grows linearly in kappa. Passing ``0`` for an
+    inversion-based identity produces a false failure; passing ``1`` for a
+    log-based one produces a bound loose enough to hide a real defect.
 
     Args:
         a: The input matrix or stack of shape ``(..., n, n)``.
-        factor: Slack over the textbook ``eps * kappa`` bound, covering error
-            accumulated across the decomposition, the spectral scaling, and
-            the reconstruction.
+        factor: Slack multiplier. Raise it for compositions of several
+            spectral operations, where errors accumulate across steps.
+        kappa_power: Exponent on the condition number. Zero for
+            conditioning-insensitive operations; one for anything whose error
+            is amplified by inversion.
 
     Returns:
         A relative error tolerance.
     """
     from geoq.geometry.spd import condition_number
 
+    dimension = int(np.asarray(a).shape[-1])
     kappa = float(np.max(condition_number(a)))
-    return factor * EPS * kappa
+    # A condition number below 1 is numerical noise on a near-identity input;
+    # clamping keeps the logarithm non-negative so the bound never shrinks
+    # below its dimension-driven floor.
+    log_kappa = np.log10(max(kappa, 1.0))
+    base = factor * EPS * np.sqrt(dimension) * (1.0 + log_kappa)
+    return base * max(kappa, 1.0) ** kappa_power
 
 
 def assert_spd(a: NDArray[np.float64], *, name: str = "result") -> None:

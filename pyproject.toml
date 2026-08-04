@@ -23,7 +23,9 @@ description = "Geometry-aware quantum learning on EEG covariance manifolds"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
-authors = [{ name = "Ali", email = "CHANGE_ME@example.com" }]
+authors = [
+    { name = "Mubashir Hussain Shah", email = "syedmubashir171@gmail.com" }
+]
 keywords = [
     "quantum machine learning",
     "riemannian geometry",
@@ -109,7 +111,7 @@ all = [
 ]
 
 [project.urls]
-Repository = "https://github.com/CHANGE_ME/GeoQ"
+Repository = "https://github.com/syedMubashir171/GeoQ"
 
 #  Command-line entry point. Defined now so that notebooks never need to know
 #  anything beyond a config path; the notebook rule in the project standards
@@ -197,6 +199,12 @@ ignore = [
     "D203",   # conflicts with D211
     "D213",   # conflicts with D212
     "E501",   # line length is the formatter's job, not the linter's
+    #  Scientific modules carry numpydoc-style "References" and "Notes"
+    #  sections with underlines, which is the convention across NumPy, SciPy
+    #  and pyRiemann and the one reviewers expect. Google convention governs
+    #  the Args/Returns/Raises blocks, where it is clearer; D416 would demand
+    #  a colon that breaks the numpydoc underline.
+    "D416",
 ]
 
 [tool.ruff.lint.pydocstyle]
