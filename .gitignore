@@ -1,0 +1,99 @@
+# --------------------------------------------------------------------------- #
+#  Scientific artefacts
+#
+#  Data and results are NOT versioned in git. They live in Google Drive, and
+#  what makes a run reproducible is the config plus the commit hash, not a
+#  copy of the outputs. A single committed EEG dataset is permanent: git keeps
+#  the blob in history even after the file is deleted, and the clone stays
+#  slow forever.
+#
+#  The .gitkeep exceptions preserve the folder structure so that a fresh clone
+#  has somewhere to write.
+# --------------------------------------------------------------------------- #
+data/*
+!data/.gitkeep
+!data/README.md
+
+results/*
+!results/.gitkeep
+
+artifacts/*
+!artifacts/.gitkeep
+
+checkpoints/
+logs/
+*.log
+
+#  Figures and tables are regenerated from locked results by the reporting
+#  layer. Committing them invites a silent mismatch between the figure in the
+#  manuscript and the numbers in RESULTS.md.
+figures/*
+!figures/.gitkeep
+tables/*
+!tables/.gitkeep
+
+#  MNE / MOABB download caches.
+mne_data/
+.moabb/
+
+# --------------------------------------------------------------------------- #
+#  Python
+# --------------------------------------------------------------------------- #
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.installed.cfg
+
+#  Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# --------------------------------------------------------------------------- #
+#  Tooling caches
+# --------------------------------------------------------------------------- #
+.pytest_cache/
+.hypothesis/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+
+# --------------------------------------------------------------------------- #
+#  Notebooks
+#
+#  Outputs are stripped by the nbstripout pre-commit hook. Committed cell
+#  outputs create enormous, unreadable diffs and leak absolute Drive paths.
+# --------------------------------------------------------------------------- #
+.ipynb_checkpoints/
+notebooks/**/*-checkpoint.ipynb
+
+# --------------------------------------------------------------------------- #
+#  Editors and OS
+# --------------------------------------------------------------------------- #
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# --------------------------------------------------------------------------- #
+#  Secrets
+#
+#  IBM Quantum API tokens go in .env, which is never committed. A token in
+#  git history is compromised even after removal, and a public repo makes
+#  that immediate.
+# --------------------------------------------------------------------------- #
+.env
+*.key
+secrets.yaml
