@@ -31,6 +31,7 @@ __all__ = [
     "assert_exactly_symmetric",
     "assert_spd",
     "relative_error",
+    "spd_matrices",
     "spectral_error_bound",
 ]
 
@@ -178,3 +179,61 @@ def assert_exactly_symmetric(a: NDArray[np.float64], *, name: str = "result") ->
         AssertionError: If the array is not bitwise symmetric.
     """
     assert np.array_equal(a, np.swapaxes(a, -1, -2)), f"{name} is not exactly symmetric"
+
+
+def spd_matrices(
+    *,
+    min_dim: int = 2,
+    max_dim: int = 10,
+    max_log_kappa: float = 8.0,
+    max_log_scale: float = 10.0,
+):
+    """Hypothesis strategy generating SPD matrices across dimension and scale.
+
+    Shared by every property test in the suite. Defining it once here rather
+    than per test module is what keeps the explored input space identical
+    across modules: two copies would drift, and a property proven on one
+    distribution would be quietly reported as holding on another.
+
+    The strategy draws a *seed* and passes it to
+    :func:`geoq.geometry.spd.random_spd`, rather than drawing matrix entries
+    directly. Drawing entries would produce non-SPD candidates that Hypothesis
+    must reject, wasting most of the example budget on inputs the functions
+    under test are contractually allowed to refuse.
+
+    Hypothesis is imported lazily so that :mod:`geoq.testing` remains
+    importable in a production install, where the ``dev`` extra is absent.
+
+    Args:
+        min_dim: Smallest matrix dimension to draw.
+        max_dim: Largest matrix dimension to draw.
+        max_log_kappa: Largest base-10 log condition number. The default of 8
+            stays two decades clear of the framework's rejection boundary at
+            ``1 / DEFAULT_PD_RTOL``, so generated matrices are always valid
+            inputs rather than borderline ones.
+        max_log_scale: Largest base-10 log eigenvalue scale, drawn
+            symmetrically about zero. Spanning ten orders each way exercises
+            the microvolt-squared regime that real EEG covariances occupy.
+
+    Returns:
+        A Hypothesis strategy yielding SPD arrays of shape ``(n, n)``.
+    """
+    import numpy as np_local
+    from hypothesis import strategies as st
+
+    from geoq.geometry.spd import random_spd
+
+    @st.composite
+    def _strategy(draw):
+        n = draw(st.integers(min_value=min_dim, max_value=max_dim))
+        seed = draw(st.integers(min_value=0, max_value=2**32 - 1))
+        log_kappa = draw(st.floats(min_value=0.0, max_value=max_log_kappa))
+        log_scale = draw(st.floats(min_value=-max_log_scale, max_value=max_log_scale))
+        return random_spd(
+            n,
+            rng=np_local.random.default_rng(seed),
+            condition_number=10.0**log_kappa,
+            scale=10.0**log_scale,
+        )
+
+    return _strategy()

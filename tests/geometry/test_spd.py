@@ -73,7 +73,12 @@ from geoq.geometry.spd import (
     sqrtm_spd,
     symmetrize,
 )
-from geoq.testing import DIMENSIONS, relative_error, spectral_error_bound
+from geoq.testing import (
+    DIMENSIONS,
+    relative_error,
+    spd_matrices,
+    spectral_error_bound,
+)
 
 # --------------------------------------------------------------------------- #
 # 1. The Block-0 deliverable
@@ -597,26 +602,6 @@ class TestRandomSPD:
 # --------------------------------------------------------------------------- #
 # 9. Property-based tests
 # --------------------------------------------------------------------------- #
-
-
-@st.composite
-def spd_matrices(draw, min_dim: int = 2, max_dim: int = 10):
-    """Hypothesis strategy generating SPD matrices across dimension and scale.
-
-    Drawing the seed rather than the entries directly keeps every generated
-    matrix exactly SPD, so the strategy explores the valid input space instead
-    of wasting draws on rejected candidates.
-    """
-    n = draw(st.integers(min_value=min_dim, max_value=max_dim))
-    seed = draw(st.integers(min_value=0, max_value=2**32 - 1))
-    log_kappa = draw(st.floats(min_value=0.0, max_value=8.0))
-    log_scale = draw(st.floats(min_value=-10.0, max_value=10.0))
-    return random_spd(
-        n,
-        rng=np.random.default_rng(seed),
-        condition_number=10.0**log_kappa,
-        scale=10.0**log_scale,
-    )
 
 
 class TestProperties:
