@@ -123,12 +123,23 @@ Repository = "https://github.com/syedMubashir171/GeoQ"
 # Packaging
 # --------------------------------------------------------------------------- #
 
+#[tool.setuptools.packages.find]
+#where = ["src"]
+
+#[tool.setuptools.package-data]
+#geoq = ["py.typed"]
+# --------------------------------------------------------------------------- #
+# Packaging
+# --------------------------------------------------------------------------- #
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 geoq = ["py.typed"]
-
 # --------------------------------------------------------------------------- #
 # pytest
 # --------------------------------------------------------------------------- #
