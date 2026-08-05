@@ -1,0 +1,107 @@
+# Pre-commit hooks for GeoQ.
+#
+# Install once, then it runs automatically on every `git commit`:
+#
+#     pip install pre-commit
+#     pre-commit install
+#
+# To check the whole repository without committing:
+#
+#     pre-commit run --all-files
+#
+# Why this exists
+# ---------------
+# An empty Python file is syntactically valid. So is one truncated halfway
+# through a function, provided the cut lands between statements. Python raises
+# nothing until something tries to use the missing piece, which in a long
+# Colab run can be hours later -- or, worse, never, if the missing piece is a
+# validation step rather than a computation.
+#
+# `check-ast` and `check-empty-source` below turn that class of failure into a
+# one-second error at commit time. The remaining hooks enforce the style rules
+# already declared in pyproject.toml, so the formatting of a diff never
+# becomes a topic in code review.
+
+default_language_version:
+  python: python3
+
+repos:
+  # ----------------------------------------------------------------------- #
+  # Structural integrity: does the file exist, parse, and contain anything?
+  # ----------------------------------------------------------------------- #
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-ast
+        # Every staged Python file must parse. Catches truncation that lands
+        # mid-expression, and any file saved with an encoding accident.
+      - id: check-yaml
+        # Experiment configs are YAML; a malformed one should fail here, not
+        # six hours into a run.
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+        # Conflict markers inside a source file are valid text and invalid
+        # Python; committing them breaks the next clone rather than this one.
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+        # EEG recordings must never enter git history. Once a large blob is
+        # committed, deleting it does not remove it -- every future clone
+        # still pays for it.
+      - id: check-case-conflict
+        # Windows and macOS filesystems are case-insensitive; Linux is not.
+        # A repository developed on Windows and run on Colab will break on
+        # exactly this if it is not caught here.
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+        # Normalises CRLF from Windows editors so diffs stay readable and
+        # line counts are comparable across machines.
+      - id: debug-statements
+        # A forgotten breakpoint() in a module will hang a Colab run with no
+        # visible error.
+
+  # ----------------------------------------------------------------------- #
+  # A file that parses but is empty
+  #
+  # check-ast accepts an empty file: it parses to an empty module. This local
+  # hook rejects any tracked Python file with no statements in it, which is
+  # the exact failure mode that produced an unimportable tangent.py.
+  # ----------------------------------------------------------------------- #
+  - repo: local
+    hooks:
+      - id: check-empty-source
+        name: reject empty or comment-only Python modules
+        entry: python scripts/check_empty_source.py
+        language: system
+        types: [python]
+        # Package markers and placeholder conftests are exempted inside the
+        # script itself, so the hook behaves the same when run by hand.
+
+  # ----------------------------------------------------------------------- #
+  # Style, using the configuration already in pyproject.toml
+  # ----------------------------------------------------------------------- #
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.13.3
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # ----------------------------------------------------------------------- #
+  # Notebooks
+  #
+  # Committed cell outputs produce enormous unreadable diffs and embed
+  # absolute Drive paths from whoever ran the notebook last. Stripping them
+  # keeps notebooks reviewable and keeps the repository free of accidental
+  # result snapshots that could drift from the locked results file.
+  # ----------------------------------------------------------------------- #
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.8.1
+    hooks:
+      - id: nbstripout
+
+# The test suite is deliberately NOT run here. Hooks must stay fast enough
+# that they are never bypassed with --no-verify; a suite that grows to two
+# minutes trains you to skip the hooks entirely, at which point they protect
+# nothing. Tests belong in CI, on push.

@@ -83,7 +83,7 @@ class Environment:
 def _run(command: list[str], cwd: Path | None = None) -> str:
     """Run a command and return its stripped stdout, or an empty string."""
     try:
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(
             command,
             cwd=cwd,
             capture_output=True,
@@ -122,7 +122,7 @@ def mount_drive(mount_point: str = "/content/drive") -> None:
         from google.colab import drive  # type: ignore[import-not-found]
 
         drive.mount(mount_point)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise RuntimeError(
             f"Failed to mount Google Drive at {mount_point}. Refusing to "
             f"continue: without Drive, every result and checkpoint would be "
@@ -152,7 +152,7 @@ def install_package(repo_root: Path, extras: str = "all") -> None:
             f"or pass the correct repo_root."
         )
     print(f"[setup] Installing geoq[{extras}] from {repo_root} ...")
-    result = subprocess.run(  # noqa: S603
+    result = subprocess.run(
         [sys.executable, "-m", "pip", "install", "-q", "-e", f".[{extras}]"],
         cwd=repo_root,
         capture_output=True,
@@ -196,9 +196,16 @@ def collect_versions() -> dict[str, str]:
     from importlib.metadata import PackageNotFoundError, version
 
     watched = [
-        "numpy", "scipy", "scikit-learn", "pandas",
-        "pyriemann", "mne", "moabb",
-        "pennylane", "qiskit", "qiskit-aer",
+        "numpy",
+        "scipy",
+        "scikit-learn",
+        "pandas",
+        "pyriemann",
+        "mne",
+        "moabb",
+        "pennylane",
+        "qiskit",
+        "qiskit-aer",
         "geoq",
     ]
     versions: dict[str, str] = {}
