@@ -28,7 +28,10 @@ What it guarantees
 
 from __future__ import annotations
 
+import contextlib
+import importlib
 import platform
+import site
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
@@ -164,6 +167,79 @@ def install_package(repo_root: Path, extras: str = "all") -> None:
     print("[setup] Install complete.")
 
 
+def refresh_import_path(repo_root: Path) -> Path:
+    """Make an editable install importable without restarting the interpreter.
+
+    ``pip install -e`` writes a ``.pth`` file pointing at the source tree, and
+    ``site.py`` reads ``.pth`` files **only at interpreter startup**. Installing
+    from inside a running session therefore leaves the package on disk,
+    correctly registered, and unimportable -- which presents as a
+    ``ModuleNotFoundError`` immediately after a successful install and looks
+    like a packaging fault.
+
+    The usual advice is to restart the runtime. That is disruptive on Colab,
+    where a restart clears the Drive mount and every variable, so this does the
+    work the restart would have done: re-runs site processing to pick up the
+    new ``.pth``, and falls back to putting the source directory on the path
+    directly.
+
+    Args:
+        repo_root: Repository root containing ``src/``.
+
+    Returns:
+        The directory that made the package importable.
+
+    Raises:
+        ImportError: If the package still cannot be imported. Fatal by design:
+            continuing would produce a session where every subsequent cell
+            fails for a reason that has scrolled off the screen.
+    """
+    source_dir = repo_root / "src"
+
+    # 1. Re-run site processing, which reads any .pth written since startup.
+    #    Best effort: site.main() is not designed to be called twice and
+    #    can raise on some layouts, and the explicit fallback below covers
+    #    that case.
+    with contextlib.suppress(Exception):
+        site.main()
+    importlib.invalidate_caches()
+
+    if _can_import_geoq():
+        return _installed_location()
+
+    # 2. Fall back to the source directory itself. Deterministic, because the
+    #    src layout is fixed by pyproject.toml rather than discovered.
+    if source_dir.is_dir() and str(source_dir) not in sys.path:
+        site.addsitedir(str(source_dir))
+        importlib.invalidate_caches()
+
+    if _can_import_geoq():
+        print(f"[setup] Import path repaired via {source_dir}")
+        return source_dir
+
+    raise ImportError(
+        f"geoq is installed but cannot be imported, and neither re-running "
+        f"site processing nor adding {source_dir} fixed it. Check that "
+        f"{source_dir} exists and contains a geoq/ directory, then restart the "
+        f"runtime and re-run this script."
+    )
+
+
+def _can_import_geoq() -> bool:
+    """Return whether the package imports cleanly."""
+    try:
+        importlib.import_module("geoq")
+    except ImportError:
+        return False
+    return True
+
+
+def _installed_location() -> Path:
+    """Return the directory the imported package resolved from."""
+    module = importlib.import_module("geoq")
+    return Path(module.__file__ or ".").parent.parent
+
+
 def create_workspace(workspace: Path) -> Path:
     """Create the Drive-backed output tree.
 
@@ -267,6 +343,12 @@ def setup(
     mount_drive()
     if install:
         install_package(repo_root, extras=extras)
+
+    #  Verifying the import is not the same as verifying the install.
+    #  importlib.metadata reads the installed metadata and reports a version
+    #  happily while `import geoq` raises, so a run can appear healthy right up
+    #  to the first cell that uses the package.
+    resolved = refresh_import_path(repo_root)
     create_workspace(workspace)
 
     environment = describe_environment(repo_root, workspace)
@@ -281,6 +363,7 @@ def setup(
     print("-" * 68)
     for package, package_version in environment.packages.items():
         print(f"  {package:<16} {package_version}")
+    print(f"  {'geoq imports from':<16} {resolved}")
     print("=" * 68)
 
     if environment.git_dirty:
