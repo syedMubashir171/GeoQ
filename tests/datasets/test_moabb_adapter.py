@@ -99,7 +99,12 @@ def make_fetcher(
         )
         channels = n_channels or spec.n_channels
         rate = kwargs["resample"] or spec.sampling_rate
-        n_times = int((kwargs["tmax"] - kwargs["tmin"]) * rate)
+        #  MNE epochs include both endpoints, so a two-second window at 250 Hz
+        #  is 501 samples rather than 500. The mock reproduces that exactly:
+        #  an earlier version used the exclusive count and let a wrong
+        #  sampling-rate derivation pass every test here while failing on the
+        #  first real download.
+        n_times = round((kwargs["tmax"] - kwargs["tmin"]) * rate) + 1
         n_trials = len(subjects) * n_trials_per_subject
 
         labels = classes or spec.classes[:2]
@@ -144,6 +149,20 @@ class TestSpecifications:
     def test_known_datasets_are_registered(self) -> None:
         for name in MOABB_SPECS:
             assert name in DATASETS
+
+    def test_two_class_variant_is_registered(self) -> None:
+        """Same recordings, different paradigm, different published numbers.
+
+        Most Riemannian BCI results are computed on the left/right subset, so
+        comparing against the literature requires knowing which variant
+        produced a result. Separate registry names make that visible in the
+        configuration file rather than implicit in a paradigm argument.
+        """
+        four_class = MOABB_SPECS["bci_iv_2a"]
+        two_class = MOABB_SPECS["bci_iv_2a_lr"]
+        assert four_class.moabb_class == two_class.moabb_class
+        assert four_class.paradigm != two_class.paradigm
+        assert len(two_class.classes) == 2
 
     def test_bci_iv_2a_matches_the_published_description(self) -> None:
         """The dataset this thesis is built on.
@@ -196,7 +215,8 @@ class TestLoading:
         data = load_moabb("bci_iv_2a")
         assert data.n_subjects == 9
         assert data.n_channels == 22
-        assert data.n_times == 500
+        # 501, not 500: MNE's window includes both endpoints.
+        assert data.n_times == 501
         assert data.sampling_rate == pytest.approx(250.0)
         assert data.metadata["source"] == "moabb"
         assert data.metadata["moabb_class"] == "BNCI2014_001"
@@ -238,15 +258,21 @@ class TestLoading:
         with pytest.raises(ValueError, match="'subject' column"):
             load_moabb("bci_iv_2a")
 
-    def test_sampling_rate_is_derived_from_the_epochs(self, mocked) -> None:
-        """Derived from epoch length, not copied from the specification.
+    def test_sampling_rate_comes_from_the_request(self, mocked) -> None:
+        """Taken from the resample argument, not measured from the epochs.
 
-        The paradigm's resampling changes the effective rate, and a rate taken
-        from the wrong source makes every reported epoch duration wrong.
+        Measuring it looks safer and is wrong. MNE's window includes both
+        endpoints, so ``n_times / duration`` reports 250.5 Hz for a two-second
+        window at 250 Hz -- which is what the specification check caught on
+        the first real download.
         """
         data = load_moabb("bci_iv_2a", resample=128.0, high_freq=30.0)
         assert data.sampling_rate == pytest.approx(128.0)
-        assert data.duration == pytest.approx(2.0)
+        assert data.n_times == 257
+
+    def test_native_rate_is_reported_exactly(self, mocked) -> None:
+        """No resampling means the dataset's own rate, to the digit."""
+        assert load_moabb("bci_iv_2a").sampling_rate == 250.0
 
     def test_default_window_comes_from_the_spec(self, mocked) -> None:
         data = load_moabb("bci_iv_2a")
@@ -329,24 +355,41 @@ class TestSpecValidation:
         with pytest.raises(ValueError, match="unexpected class labels"):
             load_moabb("bci_iv_2a")
 
-    def test_wrong_sampling_rate_rejected(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("offset", "accepted"),
+        [(0, True), (1, True), (-1, True), (2, False), (-250, False)],
+    )
+    def test_epoch_length_is_cross_checked(
+        self, offset: int, accepted: bool, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Epoch length inconsistent with the requested window."""
+        """The sample count is what reveals a rate mismatch.
 
-        def wrong_rate(spec: MOABBSpec, **kwargs: Any):
+        The rate itself now comes from the request rather than being measured,
+        so the epoch length is the quantity that can disagree. A tolerance of
+        one sample absorbs MNE's rounding at awkward rate-and-window
+        combinations; it cannot absorb a genuinely different sampling rate,
+        which is wrong by hundreds of samples. The ``-250`` case is 125 Hz
+        masquerading as 250.
+        """
+
+        def shifted(spec: MOABBSpec, **kwargs: Any):
+            rate = kwargs["resample"] or spec.sampling_rate
+            n_times = round((kwargs["tmax"] - kwargs["tmin"]) * rate) + 1 + offset
             n_trials = spec.n_subjects * 8
             return (
                 np.random.default_rng(0).standard_normal(
-                    (n_trials, spec.n_channels, 300)
+                    (n_trials, spec.n_channels, n_times)
                 ),
                 np.array([spec.classes[index % 2] for index in range(n_trials)]),
                 pd.DataFrame({"subject": np.repeat(range(1, spec.n_subjects + 1), 8)}),
             )
 
-        monkeypatch.setattr(moabb_adapter, "fetch_moabb_epochs", wrong_rate)
-        with pytest.raises(ValueError, match="Hz was expected"):
-            load_moabb("bci_iv_2a")
+        monkeypatch.setattr(moabb_adapter, "fetch_moabb_epochs", shifted)
+        if accepted:
+            assert load_moabb("bci_iv_2a").n_subjects == 9
+        else:
+            with pytest.raises(ValueError, match="samples per epoch"):
+                load_moabb("bci_iv_2a")
 
 
 # --------------------------------------------------------------------------- #

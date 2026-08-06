@@ -93,6 +93,11 @@ class MOABBSpec:
 
 
 MOABB_SPECS: dict[str, MOABBSpec] = {
+    #  Two entries for the same recordings, differing only in paradigm. The
+    #  four-class variant is the full dataset; the left/right variant is what
+    #  most published Riemannian BCI numbers are computed on, so comparing
+    #  against the literature requires knowing which one produced a result.
+    #  Separate names make that visible in the configuration file.
     "bci_iv_2a": MOABBSpec(
         moabb_class="BNCI2014_001",
         paradigm="MotorImagery",
@@ -100,6 +105,16 @@ MOABB_SPECS: dict[str, MOABBSpec] = {
         n_channels=22,
         sampling_rate=250.0,
         classes=("left_hand", "right_hand", "feet", "tongue"),
+        default_window=(0.5, 2.5),
+        citation="Tangermann et al. (2012), Review of the BCI Competition IV",
+    ),
+    "bci_iv_2a_lr": MOABBSpec(
+        moabb_class="BNCI2014_001",
+        paradigm="LeftRightImagery",
+        n_subjects=9,
+        n_channels=22,
+        sampling_rate=250.0,
+        classes=("left_hand", "right_hand"),
         default_window=(0.5, 2.5),
         citation="Tangermann et al. (2012), Review of the BCI Competition IV",
     ),
@@ -358,6 +373,7 @@ def _validate_against_spec(
     subjects: list[int] | None,
     channels: list[str] | None,
     resample: float | None,
+    window: tuple[float, float],
 ) -> None:
     """Check a loaded dataset against its published description.
 
@@ -368,18 +384,30 @@ def _validate_against_spec(
         subjects: Subjects requested, or None for all.
         channels: Channels requested, or None for the paradigm default.
         resample: Requested sampling rate, or None.
+        window: The requested ``(tmin, tmax)``, used to check the epoch length.
 
     Raises:
         ValueError: On a mismatch that indicates the data is not what the
             specification describes.
     """
     expected_rate = resample if resample is not None else spec.sampling_rate
-    if not np.isclose(dataset.sampling_rate, expected_rate):
+
+    #  The epoch length is what actually reveals a rate mismatch, since the
+    #  rate itself is now taken from the request rather than measured. MNE
+    #  includes both endpoints, so the expected count is
+    #  round(duration * rate) + 1; a tolerance of one sample absorbs MNE's
+    #  rounding at awkward rate-and-window combinations without admitting a
+    #  genuinely different sampling rate, which would be wrong by hundreds.
+    duration = window[1] - window[0]
+    expected_samples = round(duration * expected_rate) + 1
+    if abs(dataset.n_times - expected_samples) > 1:
+        implied_rate = (dataset.n_times - 1) / duration
         raise ValueError(
-            f"{name!r} loaded at {dataset.sampling_rate} Hz but "
-            f"{expected_rate} Hz was expected. A sampling rate that differs "
-            f"from the published description means the epochs are not what "
-            f"the specification describes, and results from them are not "
+            f"{name!r} returned {dataset.n_times} samples per epoch, but a "
+            f"{duration:g} s window at {expected_rate} Hz should give about "
+            f"{expected_samples} (MNE includes both endpoints). The data "
+            f"implies roughly {implied_rate:.1f} Hz, so the epochs are not "
+            f"what the specification describes and results from them are not "
             f"comparable with the literature."
         )
 
@@ -530,6 +558,7 @@ def load_moabb(
         subjects=subjects,
         channels=channels,
         resample=resample,
+        window=(window_start, window_end),
     )
 
     if cache_file is not None:
@@ -583,11 +612,19 @@ def _build_dataset(
         else np.array([], dtype=object)
     )
 
-    #  The paradigm's resampling changes the effective rate, so it is derived
-    #  from the epoch length rather than taken from the spec: a rate recorded
-    #  from the wrong source would make every reported epoch duration wrong.
-    duration = parameters["tmax"] - parameters["tmin"]
-    sampling_rate = epochs.shape[2] / duration
+    #  The rate is taken from the request, not derived from the epoch length.
+    #
+    #  Deriving it looks safer and is wrong: MNE's epoch window is inclusive of
+    #  both endpoints, so tmin=0.5 to tmax=2.5 at 250 Hz yields 501 samples
+    #  rather than 500, and n_times / duration reports 250.5 Hz. The authority
+    #  on the rate is the resample argument, or the dataset's native rate when
+    #  no resampling was requested. The sample count is cross-checked against
+    #  that rate in _validate_against_spec instead.
+    sampling_rate = float(
+        parameters["resample"]
+        if parameters["resample"] is not None
+        else spec.sampling_rate
+    )
 
     return EEGDataset(
         epochs=np.asarray(epochs, dtype=np.float64),
