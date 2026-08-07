@@ -17,8 +17,11 @@ function.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
+from hypothesis import HealthCheck, settings
 
 from geoq.testing import (
     DIMENSIONS,
@@ -86,3 +89,38 @@ def pennylane():
     return pytest.importorskip(
         "pennylane", reason="requires the 'quantum' extra: pip install -e '.[quantum]'"
     )
+
+
+#  Hypothesis profiles.
+#
+#  The seed is left random on purpose: a fixed seed would make the property
+#  tests deterministic and therefore blind to exactly the rare inputs they
+#  exist to find. Three of this framework's numerical bugs were discovered by
+#  a fresh Hypothesis draw finding a case an earlier run had missed.
+#
+#  What the ci profile actually changes: print_blob, which makes a failing
+#  example reproducible from the CI log with a single paste. That is the point
+#  of it -- a property-test failure on a runner you cannot attach to is
+#  otherwise painful to reproduce.
+#
+#  max_examples applies only to property tests that do not carry their own
+#  @settings decorator. Most in this suite do, so raising it here is a floor
+#  rather than a global increase; the timings barely move. Stated because a
+#  comment claiming CI runs more examples than it does would be worse than no
+#  comment.
+#
+#  An unknown profile name raises InvalidArgument at collection rather than
+#  falling back to a default, so a typo in the workflow fails visibly.
+settings.register_profile(
+    "dev",
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+settings.register_profile(
+    "ci",
+    max_examples=300,
+    deadline=None,
+    print_blob=True,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))

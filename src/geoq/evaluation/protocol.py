@@ -74,6 +74,7 @@ __all__ = [
     "EvaluationResult",
     "FoldResult",
     "evaluate",
+    "evaluate_fold",
 ]
 
 logger = logging.getLogger(__name__)
@@ -477,42 +478,20 @@ def evaluate(
                 f"contain every class."
             )
 
-        model = _build_fold_model(
-            estimator,
-            param_grid,
-            inner_splitter,
-            selection_metric,
-        )
-
-        started = time.perf_counter()
-        _fit_fold(model, x_array, y_array, groups_array, train_index)
-        fit_seconds = time.perf_counter() - started
-
-        started = time.perf_counter()
-        scores = _score(model, x_array[test_index], y_array[test_index], metric_names)
-        score_seconds = time.perf_counter() - started
-
-        train_scores = (
-            _score(model, x_array[train_index], y_array[train_index], metric_names)
-            if return_train_scores
-            else None
-        )
-
         fold_results.append(
-            FoldResult(
+            evaluate_fold(
+                estimator,
+                x_array,
+                y_array,
+                train_index=train_index,
+                test_index=test_index,
                 fold=index,
-                scores=scores,
-                n_train=int(train_index.size),
-                n_test=int(test_index.size),
-                test_groups=(
-                    ()
-                    if groups_array is None
-                    else tuple(np.unique(groups_array[test_index]).tolist())
-                ),
-                train_scores=train_scores,
-                fit_seconds=fit_seconds,
-                score_seconds=score_seconds,
-                best_params=getattr(model, "best_params_", None),
+                groups=groups_array,
+                metrics=metric_names,
+                param_grid=param_grid,
+                inner_splitter=inner_splitter,
+                selection_metric=selection_metric,
+                return_train_scores=return_train_scores,
             )
         )
 
@@ -535,6 +514,77 @@ def evaluate(
         },
         chance_accuracy=float(proportions.max()),
         param_grid=None if param_grid is None else dict(param_grid),
+    )
+
+
+def evaluate_fold(
+    estimator: BaseEstimator,
+    X: NDArray[Any],  # noqa: N803
+    y: NDArray[Any],
+    *,
+    train_index: NDArray[np.intp],
+    test_index: NDArray[np.intp],
+    fold: int,
+    groups: NDArray[Any] | None = None,
+    metrics: Sequence[str] = DEFAULT_METRICS,
+    param_grid: Mapping[str, Sequence[Any]] | None = None,
+    inner_splitter: Any = None,
+    selection_metric: str = "balanced_accuracy",
+    return_train_scores: bool = False,
+) -> FoldResult:
+    """Fit and score one fold.
+
+    Public because the experiment runner drives folds itself in order to
+    checkpoint each one. Extracted rather than duplicated: two copies of the
+    clone-fit-score sequence would eventually diverge, and the divergence
+    would be between the code that produces a quick result in a notebook and
+    the code that produces the archived one.
+
+    Args:
+        estimator: Unfitted estimator, cloned before use.
+        X: Full feature array.
+        y: Full label array.
+        train_index: Indices of the training portion.
+        test_index: Indices of the test portion.
+        fold: Fold index, recorded in the result.
+        groups: Full subject identifiers, or None.
+        metrics: Metric names to compute.
+        param_grid: Optional hyperparameter grid for nested selection.
+        inner_splitter: Inner cross-validator, required with ``param_grid``.
+        selection_metric: Metric optimised by the inner search.
+        return_train_scores: Whether to score the training fold too.
+
+    Returns:
+        The fold's result.
+    """
+    model = _build_fold_model(estimator, param_grid, inner_splitter, selection_metric)
+
+    started = time.perf_counter()
+    _fit_fold(model, X, y, groups, train_index)
+    fit_seconds = time.perf_counter() - started
+
+    started = time.perf_counter()
+    scores = _score(model, X[test_index], y[test_index], tuple(metrics))
+    score_seconds = time.perf_counter() - started
+
+    train_scores = (
+        _score(model, X[train_index], y[train_index], tuple(metrics))
+        if return_train_scores
+        else None
+    )
+
+    return FoldResult(
+        fold=fold,
+        scores=scores,
+        n_train=int(train_index.size),
+        n_test=int(test_index.size),
+        test_groups=(
+            () if groups is None else tuple(np.unique(groups[test_index]).tolist())
+        ),
+        train_scores=train_scores,
+        fit_seconds=fit_seconds,
+        score_seconds=score_seconds,
+        best_params=getattr(model, "best_params_", None),
     )
 
 
