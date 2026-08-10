@@ -1,0 +1,42 @@
+# Paper 1 baseline: MDM under strict leave-one-subject-out.
+#
+# The simplest strong Riemannian classifier, with no hyperparameters to tune
+# and no capacity to overfit a training fold. Reported alongside TS+LDA
+# because the gap between them turns out to be geometric rather than a
+# difference in model strength.
+name: p1_2b_ts_lda_leaky_control
+description: >
+  CONTROL CONDITION, NOT A RESULT. Identical pipeline to p1_ts_lda_loso,
+  evaluated under a shuffled split that ignores both subject identity and
+  recording order. Exists solely to quantify how much accuracy the unsound
+  protocol invents. Nine folds to match LOSO, so the two differ only in how
+  trials are assigned and not in training-set size.
+dataset:
+  name: bci_iv_2b
+  tmin: 0.5
+  tmax: 2.5
+  low_freq: 8.0
+  high_freq: 30.0
+pipeline:
+  steps:
+    - name: covariances
+      params:
+        estimator: oas
+    - name: tangent_space
+      params:
+        metric: airm
+    - name: lda
+protocol:
+  name: leaky_shuffle
+  params:
+    acknowledge_leakage: true
+    random_state: 0
+    n_splits: 9
+evaluation:
+  metrics: [accuracy, balanced_accuracy, kappa]
+statistics:
+  alpha: 0.05
+  equivalence_bound: 0.02
+runtime:
+  seed: 0
+  output_root: /content/drive/MyDrive/GeoQ_workspace/results
