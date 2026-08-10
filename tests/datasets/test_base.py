@@ -535,6 +535,44 @@ class TestRegistry:
         assert isinstance(data, EEGDataset)
         assert data.n_subjects == 2
 
+    def test_importing_the_package_registers_every_adapter(self) -> None:
+        """A config naming a real dataset must work without a manual import.
+
+        Loaders register on import, so before ``geoq.datasets`` imported the
+        adapters itself the registry contained only the synthetic generator
+        unless the caller had already imported the adapter module. That made
+        ``load_dataset("bci_iv_2a_lr")`` succeed in a notebook and fail inside
+        the experiment runner, for a reason found nowhere in the
+        configuration.
+        """
+        import geoq.datasets as datasets
+
+        for name in datasets.REGISTERED_BY_IMPORT:
+            assert name in DATASETS
+        assert "bci_iv_2a_lr" in DATASETS
+
+    def test_registry_is_populated_in_a_fresh_interpreter(self) -> None:
+        """The registry is populated by the import alone.
+
+        Verified in a subprocess because this test session has already
+        imported the adapters for other reasons, so an in-process check
+        would pass regardless.
+        """
+        import subprocess
+        import sys
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import geoq.datasets as d; print(sorted(d.DATASETS))",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "bci_iv_2a_lr" in completed.stdout
+
     def test_unknown_name_raises(self) -> None:
         """A typo must not quietly change which recordings an experiment used."""
         with pytest.raises(ValueError, match="Unknown dataset"):
