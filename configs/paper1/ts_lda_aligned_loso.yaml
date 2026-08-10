@@ -1,0 +1,50 @@
+# Paper 1 baseline: MDM under strict leave-one-subject-out.
+#
+# The simplest strong Riemannian classifier, with no hyperparameters to tune
+# and no capacity to overfit a training fold. Reported alongside TS+LDA
+# because the gap between them turns out to be geometric rather than a
+# difference in model strength.
+name: p1_ts_lda_aligned_loso
+description: >
+  Tangent Space + LDA, BCI Competition IV 2a two-class,
+  leave-one-subject-out with per-subject Riemannian re-centring.
+  Cross-subject transfer WITH an unlabelled calibration batch from the
+  held-out participant.
+dataset:
+  name: bci_iv_2a_lr
+  tmin: 0.5
+  tmax: 2.5
+  low_freq: 8.0
+  high_freq: 30.0
+pipeline:
+  steps:
+    - name: covariances
+      params:
+        estimator: oas
+    # Per-subject re-centring. Handled by the runner rather than as an ordinary
+    # pipeline step, because it needs each trial's subject label.
+    #
+    # TRANSDUCTIVE: a subject's reference point is computed from that subject's
+    # own unlabelled trials, including the held-out participant's. No labels
+    # are used, so this is not label leakage, but it assumes a calibration
+    # batch is available from a new user before decoding begins. Results from
+    # this config answer a different question from the un-aligned ones and
+    # belong in a separate row of any table.
+    - name: alignment
+      params:
+        assume_calibration_data: true
+        metric: airm
+    - name: tangent_space
+      params:
+        metric: airm
+    - name: lda
+protocol:
+  name: loso
+evaluation:
+  metrics: [accuracy, balanced_accuracy, kappa]
+statistics:
+  alpha: 0.05
+  equivalence_bound: 0.02
+runtime:
+  seed: 0
+  output_root: /content/drive/MyDrive/GeoQ_workspace/results

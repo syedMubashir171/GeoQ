@@ -413,6 +413,200 @@ class TestProvenance:
 # --------------------------------------------------------------------------- #
 
 
+class TestAlignmentStage:
+    """Per-subject re-centring, handled by the runner rather than the pipeline."""
+
+    @staticmethod
+    def _aligned_config(output_root: Path, tail: list[dict]) -> ExperimentConfig:
+        return make_config(
+            output_root,
+            pipeline={
+                "steps": [
+                    {
+                        "name": "covariances",
+                        "params": {"estimator": "oas", "audit_conditioning": False},
+                    },
+                    {
+                        "name": "alignment",
+                        "params": {"assume_calibration_data": True},
+                    },
+                    *tail,
+                ]
+            },
+        )
+
+    def test_aligning_before_folding_equals_aligning_within_folds(
+        self, dataset
+    ) -> None:
+        """The property that licenses the runner's design.
+
+        Alignment is applied once to the whole dataset before the splitter
+        runs, which looks like a shortcut and is not: a subject's reference
+        point is computed from that subject's trials alone, so the result is
+        bitwise what recomputing inside every fold would give.
+
+        Asserted here rather than argued, because the alternative reading --
+        that pre-fold alignment leaks across subjects -- is the obvious
+        suspicion for any reader, and a claim of this kind should not rest on
+        a docstring.
+        """
+        from geoq.evaluation.splitters import LeaveOneSubjectOut
+        from geoq.features.alignment import RiemannianAlignment
+        from geoq.features.covariance import Covariances
+
+        covariances = Covariances(
+            estimator="oas", audit_conditioning=False
+        ).fit_transform(dataset.epochs)
+
+        once = RiemannianAlignment(assume_calibration_data=True).fit_transform(
+            covariances, domains=dataset.subjects
+        )
+        per_fold = np.empty_like(covariances)
+        splitter = LeaveOneSubjectOut(min_subjects=2)
+        for train, test in splitter.split(
+            covariances, dataset.labels, dataset.subjects
+        ):
+            for index in (train, test):
+                per_fold[index] = RiemannianAlignment(
+                    assume_calibration_data=True
+                ).fit_transform(covariances[index], domains=dataset.subjects[index])
+
+        assert np.array_equal(once, per_fold)
+
+    def test_runner_applies_alignment(self, tmp_path: Path, dataset) -> None:
+        """The configured run must match doing it by hand."""
+        from geoq.evaluation.protocol import evaluate
+        from geoq.features.alignment import RiemannianAlignment
+        from geoq.features.covariance import Covariances
+        from geoq.models.classical.mdm import MDM
+
+        config = self._aligned_config(tmp_path, [{"name": "mdm"}])
+        summary = run_experiment(config, dataset=dataset)
+
+        covariances = Covariances(
+            estimator="oas", audit_conditioning=False
+        ).fit_transform(dataset.epochs)
+        aligned = RiemannianAlignment(assume_calibration_data=True).fit_transform(
+            covariances, domains=dataset.subjects
+        )
+        expected = evaluate(
+            MDM(),
+            aligned,
+            dataset.labels,
+            groups=dataset.subjects,
+            splitter=make_splitter("loso", min_subjects=2),
+            metrics=config.evaluation.metrics,
+        )
+        assert np.allclose(summary.result.scores("kappa"), expected.scores("kappa"))
+
+    def test_alignment_changes_the_result(self, tmp_path: Path, dataset) -> None:
+        """Otherwise the step would be decorative."""
+        plain = run_experiment(make_config(tmp_path), dataset=dataset).result
+        aligned = run_experiment(
+            self._aligned_config(
+                tmp_path, [{"name": "tangent_space"}, {"name": "lda"}]
+            ),
+            dataset=dataset,
+        ).result
+        assert not np.allclose(plain.scores("kappa"), aligned.scores("kappa"))
+
+    def test_aligned_run_gets_its_own_directory(self, tmp_path: Path, dataset) -> None:
+        """A different pipeline is a different experiment."""
+        plain = run_experiment(make_config(tmp_path), dataset=dataset)
+        aligned = run_experiment(
+            self._aligned_config(
+                tmp_path, [{"name": "tangent_space"}, {"name": "lda"}]
+            ),
+            dataset=dataset,
+        )
+        assert plain.output_dir != aligned.output_dir
+
+    def test_registering_alignment_did_not_change_existing_hashes(
+        self, tmp_path: Path
+    ) -> None:
+        """Adding a step name must not invalidate archived results.
+
+        Result directories are named by the experiment hash. If registering a
+        new step changed the hash of configurations that do not use it, every
+        previously archived run would be orphaned and have to be recomputed.
+        """
+        config = make_config(tmp_path)
+        assert "alignment" not in config.pipeline.step_names
+        assert (
+            config.experiment_hash
+            == ExperimentConfig(**json.loads(config.model_dump_json())).experiment_hash
+        )
+
+    def test_alignment_must_follow_covariances(self, tmp_path: Path, dataset) -> None:
+        """Re-centring operates on SPD matrices, not on raw epochs."""
+        config = make_config(
+            tmp_path,
+            pipeline={
+                "steps": [
+                    {
+                        "name": "alignment",
+                        "params": {"assume_calibration_data": True},
+                    },
+                    {"name": "mdm"},
+                ]
+            },
+        )
+        with pytest.raises(ValueError, match="preceded by exactly one"):
+            run_experiment(config, dataset=dataset)
+
+    def test_duplicate_alignment_rejected(self, tmp_path: Path, dataset) -> None:
+        """Re-centring twice is a no-op and signals a configuration mistake."""
+        config = make_config(
+            tmp_path,
+            pipeline={
+                "steps": [
+                    {
+                        "name": "covariances",
+                        "params": {"audit_conditioning": False},
+                    },
+                    {
+                        "name": "alignment",
+                        "params": {"assume_calibration_data": True},
+                    },
+                    {
+                        "name": "alignment",
+                        "params": {"assume_calibration_data": True},
+                    },
+                    {"name": "mdm"},
+                ]
+            },
+        )
+        with pytest.raises(ValueError, match="alignment steps"):
+            run_experiment(config, dataset=dataset)
+
+    def test_calibration_declaration_defaults_on_in_the_runner(
+        self, tmp_path: Path, dataset
+    ) -> None:
+        """A config omitting the flag still gets a transductive method.
+
+        The builder supplies it so that a YAML file is not rejected for a
+        detail the runner already knows, but the assumption is logged on every
+        run and named in the step, so it stays visible.
+        """
+        config = self._aligned_config(tmp_path, [{"name": "mdm"}])
+        config = ExperimentConfig(
+            **{
+                **json.loads(config.model_dump_json()),
+                "pipeline": {
+                    "steps": [
+                        {
+                            "name": "covariances",
+                            "params": {"audit_conditioning": False},
+                        },
+                        {"name": "alignment"},
+                        {"name": "mdm"},
+                    ]
+                },
+            }
+        )
+        assert run_experiment(config, dataset=dataset).n_folds == 4
+
+
 class TestConfigurationVariants:
     """Settings in the file reach the run."""
 

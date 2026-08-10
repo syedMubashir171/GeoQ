@@ -54,7 +54,10 @@ from geoq.evaluation.splitters import make_splitter
 from geoq.runtime.checkpoint import ShardStore
 from geoq.runtime.config import ExperimentConfig, PipelineConfig, save_config
 
+ALIGNMENT_STEP = "alignment"
+
 __all__ = [
+    "ALIGNMENT_STEP",
     "STEP_BUILDERS",
     "RunSummary",
     "build_pipeline",
@@ -74,6 +77,12 @@ def _covariances(**params: Any):
     from geoq.features.covariance import Covariances
 
     return Covariances(**params)
+
+
+def _alignment(**params: Any):
+    from geoq.features.alignment import RiemannianAlignment
+
+    return RiemannianAlignment(**{"assume_calibration_data": True, **params})
 
 
 def _tangent_space(**params: Any):
@@ -114,6 +123,7 @@ def _scaler(**params: Any):
 
 STEP_BUILDERS: dict[str, Any] = {
     "covariances": _covariances,
+    "alignment": _alignment,
     "tangent_space": _tangent_space,
     "mdm": _mdm,
     "lda": _lda,
@@ -316,13 +326,17 @@ def run_experiment(
 
     #  Built before the data is loaded: a typo in the pipeline should fail in a
     #  second rather than after a download.
-    pipeline = build_pipeline(config.pipeline)
+    prefix_config, pipeline_config, alignment_step = _split_at_alignment(
+        config.pipeline
+    )
+    pipeline = build_pipeline(pipeline_config)
     splitter = make_splitter(config.protocol.name, **config.protocol.params)
 
     data = dataset if dataset is not None else _load_from_config(config)
     logger.info("%s | %s", config.describe(), data)
 
-    folds = list(splitter.split(data.epochs, data.labels, data.subjects))
+    features = _apply_preprocessing(data, prefix_config, alignment_step)
+    folds = list(splitter.split(features, data.labels, data.subjects))
     unit_ids = [config.unit_id(fold=index) for index in range(len(folds))]
     pending = set(store.pending(unit_ids))
 
@@ -335,7 +349,7 @@ def run_experiment(
         fold_started = time.perf_counter()
         fold_result = evaluate_fold(
             pipeline,
-            data.epochs,
+            features,
             data.labels,
             train_index=train_index,
             test_index=test_index,
@@ -390,6 +404,97 @@ def run_experiment(
     )
     logger.info("%s", summary.describe())
     return summary
+
+
+def _split_at_alignment(
+    config: PipelineConfig,
+) -> tuple[PipelineConfig | None, PipelineConfig, Any]:
+    """Separate the steps that run before per-subject alignment.
+
+    Alignment cannot be an ordinary pipeline step: it needs each trial's
+    subject, and ``Pipeline`` does not forward ``groups`` to ``transform``.
+    Rather than smuggle that through a global, the runner splits the pipeline
+    at the alignment step, applies the prefix plus alignment once, and treats
+    the remainder as the estimator.
+
+    Applying alignment before folding is not a shortcut. A subject's reference
+    point is computed from that subject's trials alone, so aligning the whole
+    dataset gives bitwise the same result as recomputing it inside every fold
+    -- the property asserted by
+    ``tests/features/test_alignment.py::test_domains_are_independent``. It is
+    still transductive, which is what ``assume_calibration_data`` declares.
+
+    Args:
+        config: The full pipeline specification.
+
+    Returns:
+        Tuple of the prefix configuration (or None), the remaining pipeline,
+        and the alignment step (or None).
+
+    Raises:
+        ValueError: If alignment appears more than once, or is not preceded
+            solely by covariance estimation. Alignment operates on SPD
+            matrices, so anything else before it would hand it the wrong kind
+            of object.
+    """
+    names = config.step_names
+    if ALIGNMENT_STEP not in names:
+        return None, config, None
+    if names.count(ALIGNMENT_STEP) > 1:
+        raise ValueError(
+            f"Pipeline contains {names.count(ALIGNMENT_STEP)} alignment steps. "
+            f"Re-centring twice is a no-op the second time and signals a "
+            f"configuration mistake."
+        )
+
+    index = names.index(ALIGNMENT_STEP)
+    prefix = config.steps[:index]
+    if [step.name for step in prefix] != ["covariances"]:
+        raise ValueError(
+            f"Alignment must be preceded by exactly one 'covariances' step, "
+            f"got {[step.name for step in prefix]}. Re-centring operates on "
+            f"SPD matrices; any other preceding step would hand it something "
+            f"that is not one."
+        )
+    return (
+        PipelineConfig(steps=prefix),
+        PipelineConfig(steps=config.steps[index + 1 :]),
+        config.steps[index],
+    )
+
+
+def _apply_preprocessing(
+    data: EEGDataset, prefix: PipelineConfig | None, alignment_step: Any
+) -> Any:
+    """Run the pre-alignment steps and align, or return the raw epochs.
+
+    Args:
+        data: The dataset.
+        prefix: Steps to apply before alignment, or None when no alignment is
+            configured.
+        alignment_step: The alignment step configuration, or None.
+
+    Returns:
+        The array the folds will be computed over.
+    """
+    if prefix is None:
+        return data.epochs
+
+    covariances = build_pipeline(prefix).fit_transform(data.epochs)
+    aligner = _alignment(**alignment_step.params)
+    aligned = aligner.fit_transform(covariances, domains=data.subjects)
+
+    from geoq.features.alignment import alignment_quality
+
+    quality = alignment_quality(aligned, data.subjects)
+    logger.info(
+        "Aligned %d subjects; residual distance to the identity: max %.2e. "
+        "Alignment is transductive: each subject's reference uses that "
+        "subject's own unlabelled trials.",
+        int(quality["n_domains"]),
+        quality["max_residual"],
+    )
+    return aligned
 
 
 def _load_from_config(config: ExperimentConfig) -> EEGDataset:

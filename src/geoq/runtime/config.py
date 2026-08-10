@@ -83,9 +83,15 @@ NON_SEMANTIC_FIELDS: frozenset[str] = frozenset(
 #: Pipeline step names the framework currently provides. Validated early so a
 #: misspelt step fails at load time rather than after the dataset has been
 #: downloaded and preprocessed.
+#:
+#: ``alignment`` is handled specially by the runner rather than being an
+#: ordinary pipeline step, because per-subject re-centring needs subject
+#: labels and ``sklearn.pipeline.Pipeline`` does not forward them to
+#: ``transform``. See :func:`geoq.runtime.runner.run_experiment`.
 KNOWN_STEPS: frozenset[str] = frozenset(
     {
         "covariances",
+        "alignment",
         "tangent_space",
         "mdm",
         "lda",
