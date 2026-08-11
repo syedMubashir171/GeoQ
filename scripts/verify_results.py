@@ -69,10 +69,14 @@ def banner(text: str) -> None:
 
 
 # --------------------------------------------------------------------- #
-banner("4.2  CHANNEL COUNT  (from A_gain_mu_beta.csv, 8-30 Hz, OAS)")
+banner("4.2  CHANNEL COUNT  (from E_channel_sweep.csv, 8-30 Hz, OAS)")
 
+#  The channel sweep has its own file. Reading it from the band sweep instead
+#  silently restricts the analysis to the two channel counts that sweep used,
+#  which is how an earlier draft came to report trend statistics over two
+#  points while presenting a six-point table.
 gain = load("A_gain_*.csv")
-sweep = gain[gain.band == "mu_beta"]
+sweep = load("E_channel_sweep.csv")
 
 print("\nTable 2 -- means over subsets at each channel count")
 table2 = sweep.pivot_table(
@@ -238,7 +242,9 @@ print(theta.to_string())
 # --------------------------------------------------------------------- #
 banner("4.5  RESIDUAL ROTATION  (from B_rotation.csv)")
 
-rot = load("B_rotation.csv")
+#  B2 supersedes B_rotation.csv: three subsets per condition instead of one,
+#  and the benefit computed on the same subsets as the rotation.
+rot = load("B2_rotation_*.csv")
 cols = [
     c
     for c in (
@@ -262,53 +268,40 @@ print(
     f"  rotational ~ displacement | n_channels {partial_rho(rot.after_rotational, rot.displacement, rot.n_channels)}"
 )
 
-merged = rot.merge(
-    gain.pivot_table(
-        index=["band", "n_channels"], columns="model", values="gain"
-    ).reset_index(),
-    on=["band", "n_channels"],
-    how="inner",
-)
-keep = merged[merged.band != "theta"]
-print(f"\n  merged conditions: {len(merged)} (all), {len(keep)} (excluding theta)")
+#  B2 carries the benefit alongside the rotation, so no merge is needed and
+#  the two quantities are guaranteed to come from the same electrode subset.
+keep = rot[rot.band != "theta"]
+print(f"\n  conditions: {len(rot)} (all), {len(keep)} (excluding theta)")
 for model in ("mdm", "ts_lda"):
-    if model not in merged:
-        continue
+    column = f"{model}_gain"
     print(
         f"  {model:7s} gain ~ residual rotation: "
-        f"all {rho(merged.after_rotational, merged[model])} | "
-        f"no-theta {rho(keep.after_rotational, keep[model])}"
+        f"all {rho(rot.after_rotational, rot[column])} | "
+        f"no-theta {rho(keep.after_rotational, keep[column])}"
     )
+
 
 # --------------------------------------------------------------------- #
 banner("4.6  CLASSIFIER ASYMMETRY  (band conditions)")
 
-wide = gain.pivot_table(
-    index=["band", "n_channels"], columns="model", values="gain"
-).reset_index()
-wide = wide.merge(
-    gain[gain.model == "mdm"]
-    .pivot_table(index=["band", "n_channels"], values="inter_subject_distance")
-    .reset_index(),
-    on=["band", "n_channels"],
-)
-no_theta = wide[wide.band != "theta"]
+no_theta = rot[rot.band != "theta"]
 for model in ("mdm", "ts_lda"):
+    column = f"{model}_gain"
     print(
         f"  {model:7s} gain ~ displacement: "
-        f"all {rho(wide.inter_subject_distance, wide[model])} | "
-        f"no-theta {rho(no_theta.inter_subject_distance, no_theta[model])}"
+        f"all {rho(rot.displacement, rot[column])} | "
+        f"no-theta {rho(no_theta.displacement, no_theta[column])}"
     )
 
-print("\n  Monotone ordering at the higher channel count:")
-high = wide[wide.n_channels == wide.n_channels.max()].sort_values(
-    "inter_subject_distance"
+print("\n  Ordering by displacement at the higher channel count:")
+high = (
+    rot[rot.n_channels == rot.n_channels.max()]
+    .groupby("band")[["displacement", "mdm_gain", "ts_lda_gain"]]
+    .mean()
+    .sort_values("displacement")
 )
-print(
-    high[["band", "inter_subject_distance", "mdm", "ts_lda"]]
-    .round(3)
-    .to_string(index=False)
-)
+print(high.round(3).to_string())
+
 
 print("\n" + "=" * 72)
 print("Check every figure in Section 4 against the output above.")
