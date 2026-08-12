@@ -66,6 +66,18 @@ mpl.rcParams.update(
     }
 )
 
+#  Display names for the bands. Defined once so a figure axis and the
+#  manuscript text cannot drift apart: "low_gamma" is the column name,
+#  the label below is what the paper calls it.
+LABELS = {
+    "theta": "theta",
+    "mu": "mu",
+    "beta": "beta",
+    "low_gamma": "low γ",  # noqa: RUF001
+    "mu_beta": "mu+beta",
+    "broad": "broad",
+}
+
 MDM_STYLE = {"color": "#0072B2", "marker": "o", "linestyle": "-"}
 TS_STYLE = {"color": "#D55E00", "marker": "s", "linestyle": "--"}
 
@@ -132,6 +144,20 @@ def figure_1() -> None:
             edgecolors=style["color"],
             marker=style["marker"],
         )
+
+    #  A proxy artist so the open markers get a legend entry. A figure that
+    #  needs its caption to be interpretable fails whenever it is viewed
+    #  alone, which is how figures are usually first encountered.
+    ax.scatter(
+        [],
+        [],
+        s=14,
+        facecolors="none",
+        edgecolors="0.35",
+        linewidths=0.6,
+        marker="o",
+        label="theta (excluded)",
+    )
 
     #  Headroom reserved above the data so a coefficient never sits on a
     #  marker. Set before annotating, since the text is placed in axes
@@ -259,40 +285,37 @@ def figure_3() -> None:
     ax.legend(loc="lower right", handletextpad=0.3)
 
     ax = axes[1]
-    order = (
-        rot[rot.n_channels == 18]
-        .groupby("band")
-        .displacement.mean()
-        .sort_values()
-        .index
-    )
+    #  Grouped, not stacked. The two components combine in quadrature, since
+    #  rotational^2 + spectral^2 = total^2, so a stacked bar would show a sum
+    #  that corresponds to no measured quantity: at the mu band it overstates
+    #  the true residual of 0.838 as 1.179, by 41 per cent. Grouped bars leave
+    #  each height a quantity that was actually measured.
+    subset = rot[rot.n_channels == 18]
+    order = subset.groupby("band").displacement.mean().sort_values().index
     means = (
-        rot[rot.n_channels == 18]
-        .groupby("band")[["after_rotational", "after_spectral"]]
-        .mean()
-        .loc[order]
+        subset.groupby("band")[["after_rotational", "after_spectral"]].mean().loc[order]
     )
     positions = np.arange(len(order))
+    width = 0.38
     ax.bar(
-        positions,
+        positions - width / 2,
         means.after_rotational,
-        0.62,
+        width,
         label="rotational",
         color="#0072B2",
         edgecolor="none",
     )
     ax.bar(
-        positions,
+        positions + width / 2,
         means.after_spectral,
-        0.62,
-        bottom=means.after_rotational,
+        width,
         label="spectral",
         color="#56B4E9",
         edgecolor="none",
     )
     ax.set_xticks(positions)
-    ax.set_xticklabels([b.replace("_", "+") for b in order], rotation=30, ha="right")
-    ax.set_ylabel("Residual discrepancy")
+    ax.set_xticklabels([LABELS.get(b, b) for b in order], rotation=30, ha="right")
+    ax.set_ylabel("Component magnitude")
     ax.set_xlabel("Band, ordered by displacement")
     ax.legend(loc="upper left", handletextpad=0.4)
 
