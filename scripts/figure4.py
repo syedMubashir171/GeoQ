@@ -4,6 +4,7 @@ Displacement ranks conditions within a dataset but does not calibrate
 across them, and this figure is where that is visible.
 
 Why this figure is necessary
+----------------------------
 Section 5.7 is the manuscript's most consequential negative result, and it
 is inherently visual: two datasets whose fitted lines share a slope
 direction but differ in intercept, over displacement ranges that barely
@@ -33,7 +34,7 @@ RESULTS = Path(
 FIGURES = RESULTS / "figures"
 FIGURES.mkdir(exist_ok=True)
 
-DOUBLE = 7.48  # Elsevier/IOP double-column width in inches
+DOUBLE = 7.48  # IOP double-column width in inches
 
 mpl.rcParams.update(
     {
@@ -57,9 +58,9 @@ mpl.rcParams.update(
     }
 )
 
-#  Okabe-Ito, distinguishable in greyscale and to the common forms of
-#  colour vision deficiency. Marker shape carries the distinction as well,
-#  so the figure does not depend on colour being reproduced.
+#  Okabe-Ito, distinguishable in greyscale and to the common forms of colour
+#  vision deficiency. Marker shape carries the distinction as well, so the
+#  figure does not depend on colour being reproduced.
 STYLE = {
     "bci_iv_2a_lr": ("#0072B2", "o", "BCI IV 2a"),
     "physionet_mi": ("#D55E00", "s", "PhysioNet MI"),
@@ -75,13 +76,16 @@ def main() -> None:
     frame = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
 
     #  Conditions where the unaligned classifier is at or below chance are
-    #  excluded, as everywhere else in the paper: a benefit is undefined
-    #  when there is no performance to improve.
+    #  excluded, as everywhere else in the paper: a benefit is undefined when
+    #  there is no performance to improve.
     usable = frame[frame.kappa_raw > 0.02]
 
-    fig, axes = plt.subplots(1, 2, figsize=(DOUBLE * 0.82, 2.9), sharex=True)
+    fig, axes = plt.subplots(1, 2, figsize=(DOUBLE * 0.82, 3.1), sharex=True)
 
-    for ax, model, title in ((axes[0], "mdm", "MDM"), (axes[1], "ts_lda", "TS+LDA")):
+    for ax, model, title in (
+        (axes[0], "mdm", "MDM"),
+        (axes[1], "ts_lda", "TS+LDA"),
+    ):
         sub = usable[usable.model == model]
         for name, (colour, marker, label) in STYLE.items():
             cell = sub[sub.dataset == name]
@@ -116,8 +120,16 @@ def main() -> None:
         ax.set_title(title)
         ax.set_xlabel("Inter-subject Fréchet distance")
 
+    #  Headroom is reserved on both panels before the legend is placed, as in
+    #  figures 1 to 3. Matplotlib's autoscaling leaves none, so a legend in
+    #  any corner lands on data; adding the space first is what keeps the
+    #  legend clear without pushing it outside the axes.
+    for ax in axes:
+        low, high = ax.get_ylim()
+        ax.set_ylim(low, high + 0.24 * (high - low))
+
     axes[0].set_ylabel(r"Alignment benefit, $\Delta\kappa$")
-    axes[0].legend(loc="upper left", handletextpad=0.3, borderaxespad=0.2)
+    axes[0].legend(loc="upper left", handletextpad=0.3, borderaxespad=0.3)
 
     out = FIGURES / "figure4_cross_dataset.pdf"
     fig.savefig(out)
@@ -132,10 +144,10 @@ def main() -> None:
         for name in STYLE:
             cell = sub[sub.dataset == name]
             if len(cell) >= 4:
-                s, i = np.polyfit(cell.displacement, cell.gain, 1)
+                slope, intercept = np.polyfit(cell.displacement, cell.gain, 1)
                 print(
-                    f"  {model:7s} {name:14s} slope {s:+.4f}  "
-                    f"intercept {i:+.4f}  range "
+                    f"  {model:7s} {name:14s} slope {slope:+.4f}  "
+                    f"intercept {intercept:+.4f}  range "
                     f"{cell.displacement.min():.2f}-{cell.displacement.max():.2f}"
                 )
 
