@@ -120,22 +120,27 @@ def main() -> None:
         ax.set_title(title)
         ax.set_xlabel("Inter-subject Fréchet distance")
 
-    #  Headroom is reserved on both panels before the legend is placed, as in
-    #  figures 1 to 3. Matplotlib's autoscaling leaves none, so a legend in
-    #  any corner lands on data; adding the space first is what keeps the
-    #  legend clear without pushing it outside the axes.
-    for ax in axes:
-        low, high = ax.get_ylim()
-        ax.set_ylim(low, high + 0.24 * (high - low))
+        #  Headroom is reserved on both panels before the legend is placed, as in
+        #  figures 1 to 3. Matplotlib's autoscaling leaves none, so a legend in
+        #  any corner lands on data; adding the space first is what keeps the
+        #  legend clear without pushing it outside the axes.
+        axes[0].set_ylabel(r"Alignment benefit, $\Delta\kappa$")
 
-    axes[0].set_ylabel(r"Alignment benefit, $\Delta\kappa$")
-    axes[0].legend(loc="upper left", handletextpad=0.3, borderaxespad=0.3)
-
-    out = FIGURES / "figure4_cross_dataset.pdf"
-    fig.savefig(out)
-    plt.close(fig)
-    print(f"written: {out}")
-
+    #  The legend sits below the panels rather than inside one of them.
+    #  An in-axes legend has to find a corner free of data in both panels,
+    #  and which corner is free depends on the data: reserving headroom was
+    #  not enough here, because the upper-left of the MDM panel is where the
+    #  2a points begin. Placing it outside removes the dependency entirely.
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="lower center",
+        ncol=3,
+        bbox_to_anchor=(0.5, -0.08),
+        handletextpad=0.3,
+        columnspacing=1.6,
+    )
     #  Print the fitted parameters so the caption and section 5.7 can be
     #  checked against the figure rather than against a remembered value.
     print("\nfitted lines (for checking against section 5.7):")
