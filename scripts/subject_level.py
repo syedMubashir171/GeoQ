@@ -231,8 +231,8 @@ def analyse() -> None:
     collapsed = collapsed.merge(condition_raw, on=["band", "n_channels", "classifier"])
     usable = collapsed[collapsed.condition_raw > 0.02].copy()
 
-    n_cond = usable.groupby("classifier").apply(
-        lambda d: d[["band", "n_channels"]].drop_duplicates().shape[0]
+    n_cond = usable.groupby("classifier")[["band", "n_channels"]].apply(
+        lambda d: d.drop_duplicates().shape[0]
     )
     print(
         f"\n{len(collapsed)} subject-condition observations "
