@@ -55,7 +55,7 @@ import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MaxAbsScaler, StandardScaler
 from sklearn.svm import SVC
 
 from geoq.datasets import load_dataset
@@ -85,7 +85,13 @@ MAX_TRIALS: int | None = 648
 QUBIT_COUNTS = (4, 8, 12)
 
 FEATURE_MAPS = ("angle", "zz")
-SCALE_CANDIDATES = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0)
+#: Candidate scales. The range extends well below one because principal
+#: components carry the variance of the data rather than lying in a fixed
+#: interval, and an earlier run selected the smallest candidate in every
+#: configuration, which is the signature of a search whose optimum lies
+#: outside its range. Features are additionally normalised after reduction,
+#: so that a given scale means the same thing at every qubit count.
+SCALE_CANDIDATES = (0.05, 0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0)
 PROBE_SIZE = 30
 
 
@@ -154,42 +160,34 @@ def run(dataset_name: str = "bci_iv_2a_lr") -> None:
 
     covariances = Covariances(estimator="oas").fit_transform(data.epochs)
     splitter = LeaveOneSubjectOut()
-    records = []
+
+    #  Completed configurations are read back and skipped. A single
+    #  configuration can take three hours, so a restart that repeated
+    #  finished work would make the experiment unrunnable on a session with
+    #  a time limit.
+    output = RESULTS / "quantum_vs_classical.csv"
+    records = pd.read_csv(output).to_dict("records") if output.exists() else []
+    done = {(r["model"], r.get("n_qubits"), r.get("feature_map")) for r in records}
+    if records:
+        print(
+            f"resuming: {len(records)} configuration(s) already complete\n", flush=True
+        )
+
+    def completed(model, n_qubits, feature_map) -> bool:
+        """Whether this configuration is already in the archived results."""
+        key = (model, n_qubits, feature_map)
+        if key in done:
+            print(f"  {model} {n_qubits} {feature_map}: cached", flush=True)
+            return True
+        return False
 
     #  The classical reference: tangent space plus LDA on all features, which
     #  is the number the classical study reports.
-    started = time.perf_counter()
-    result = evaluate(
-        make_pipeline(TangentSpace(), LinearDiscriminantAnalysis()),
-        covariances,
-        data.labels,
-        groups=data.subjects,
-        splitter=splitter,
-        metrics=("accuracy", "kappa"),
-    )
-    records.append(
-        {
-            "model": "ts_lda",
-            "n_qubits": np.nan,
-            "feature_map": "none",
-            "kappa": result.mean("kappa"),
-            "kappa_sd": result.std("kappa"),
-            "accuracy": result.mean("accuracy"),
-            "seconds": time.perf_counter() - started,
-        }
-    )
-    print(f"  ts_lda (all features)  kappa {result.mean('kappa'):+.3f}", flush=True)
-
-    tangent = TangentSpace().fit_transform(covariances)
-
-    for n_qubits in QUBIT_COUNTS:
-        #  The matched classical comparator: the same reduction, a classical
-        #  kernel. This is what separates the effect of the quantum kernel
-        #  from the effect of discarding features to fit the qubit budget.
+    if not completed("ts_lda", np.nan, "none"):
         started = time.perf_counter()
         result = evaluate(
-            make_pipeline(StandardScaler(), PCA(n_qubits, random_state=0), SVC()),
-            tangent,
+            make_pipeline(TangentSpace(), LinearDiscriminantAnalysis()),
+            covariances,
             data.labels,
             groups=data.subjects,
             splitter=splitter,
@@ -197,8 +195,8 @@ def run(dataset_name: str = "bci_iv_2a_lr") -> None:
         )
         records.append(
             {
-                "model": "rbf_svm",
-                "n_qubits": n_qubits,
+                "model": "ts_lda",
+                "n_qubits": np.nan,
                 "feature_map": "none",
                 "kappa": result.mean("kappa"),
                 "kappa_sd": result.std("kappa"),
@@ -206,12 +204,51 @@ def run(dataset_name: str = "bci_iv_2a_lr") -> None:
                 "seconds": time.perf_counter() - started,
             }
         )
-        print(
-            f"  rbf_svm  {n_qubits:2d}q            kappa {result.mean('kappa'):+.3f}",
-            flush=True,
-        )
+        pd.DataFrame(records).to_csv(output, index=False)
+        print(f"  ts_lda (all features)  kappa {result.mean('kappa'):+.3f}", flush=True)
+
+    tangent = TangentSpace().fit_transform(covariances)
+
+    for n_qubits in QUBIT_COUNTS:
+        #  The matched classical comparator: the same reduction, a classical
+        #  kernel. This is what separates the effect of the quantum kernel
+        #  from the effect of discarding features to fit the qubit budget.
+        if not completed("rbf_svm", n_qubits, "none"):
+            started = time.perf_counter()
+            result = evaluate(
+                make_pipeline(
+                    StandardScaler(),
+                    PCA(n_qubits, random_state=0),
+                    MaxAbsScaler(),
+                    SVC(),
+                ),
+                tangent,
+                data.labels,
+                groups=data.subjects,
+                splitter=splitter,
+                metrics=("accuracy", "kappa"),
+            )
+            records.append(
+                {
+                    "model": "rbf_svm",
+                    "n_qubits": n_qubits,
+                    "feature_map": "none",
+                    "kappa": result.mean("kappa"),
+                    "kappa_sd": result.std("kappa"),
+                    "accuracy": result.mean("accuracy"),
+                    "seconds": time.perf_counter() - started,
+                }
+            )
+            pd.DataFrame(records).to_csv(output, index=False)
+            print(
+                f"  rbf_svm  {n_qubits:2d}q            "
+                f"kappa {result.mean('kappa'):+.3f}",
+                flush=True,
+            )
 
         for feature_map in FEATURE_MAPS:
+            if completed("quantum", n_qubits, feature_map):
+                continue
             #  The scale is chosen from the training features of the first
             #  fold. It is selected without labels, so this leaks nothing;
             #  selecting it per fold would be cleaner still but multiplies
@@ -221,14 +258,30 @@ def run(dataset_name: str = "bci_iv_2a_lr") -> None:
                 iter(splitter.split(tangent, data.labels, data.subjects))
             )[0]
             reduced = make_pipeline(
-                StandardScaler(), PCA(n_qubits, random_state=0)
+                StandardScaler(),
+                PCA(n_qubits, random_state=0),
+                #  Without this the components have the variance of the
+                #  data, so the same scale value means something different
+                #  at every qubit count and the search range cannot be set
+                #  sensibly.
+                MaxAbsScaler(),
             ).fit_transform(tangent[train_index])
             scale = select_scale(reduced, feature_map)
+            if scale in (SCALE_CANDIDATES[0], SCALE_CANDIDATES[-1]):
+                print(
+                    f"    warning: selected scale {scale} is at the edge "
+                    f"of the search range, so the optimum may lie outside "
+                    f"it and this configuration should not be reported",
+                    flush=True,
+                )
 
             started = time.perf_counter()
             result = evaluate(
                 QuantumKernelClassifier(
-                    n_qubits=n_qubits, feature_map=feature_map, scale=scale
+                    n_qubits=n_qubits,
+                    feature_map=feature_map,
+                    scale=scale,
+                    normalise=True,
                 ),
                 tangent,
                 data.labels,
@@ -256,8 +309,7 @@ def run(dataset_name: str = "bci_iv_2a_lr") -> None:
                 flush=True,
             )
 
-            frame = pd.DataFrame(records)
-            frame.to_csv(RESULTS / "quantum_vs_classical.csv", index=False)
+            pd.DataFrame(records).to_csv(output, index=False)
 
     (RESULTS / "run_config.json").write_text(
         json.dumps(

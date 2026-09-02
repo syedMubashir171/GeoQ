@@ -113,6 +113,10 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
         standardise: Whether to standardise before reduction. Left on by
             default because the encoded rotations are angles, so features on
             very different scales would occupy the circuit unevenly.
+        normalise: Whether to divide by the largest absolute value after
+            reduction. Principal components carry the variance of the data,
+            so without this a given ``scale`` means something different at
+            every qubit count and no single search range fits them all.
 
     Attributes:
         classes_: The class labels seen during fit.
@@ -137,9 +141,10 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
         feature_map: str = "zz",
         reps: int = 1,
         scale: float = 1.0,
-        C: float = 1.0,  # noqa: N803
+        C: float = 1.0,
         reducer: str = "pca",
         standardise: bool = True,
+        normalise: bool = True,
     ) -> None:
         """Store hyperparameters; see the class docstring."""
         self.n_qubits = n_qubits
@@ -149,6 +154,7 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
         self.C = C
         self.reducer = reducer
         self.standardise = standardise
+        self.normalise = normalise
 
     def _validate(self) -> None:
         """Check hyperparameters at fit time.
@@ -167,7 +173,7 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
         if self.scale <= 0:
             raise ValueError(f"scale must be positive, got {self.scale}.")
 
-    def _reduce_fit(self, X: NDArray[Any]) -> NDArray[np.float64]:  # noqa: N803
+    def _reduce_fit(self, X: NDArray[Any]) -> NDArray[np.float64]:
         """Fit the reduction chain and return the reduced training features.
 
         Both steps fit parameters and are therefore fitted here, inside the
@@ -208,16 +214,23 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
                 self.n_qubits,
             )
         self.pca_ = PCA(n_components=n_components, random_state=0)
-        return self._pad(self.pca_.fit_transform(reduced))
+        components = self.pca_.fit_transform(reduced)
+        if self.normalise:
+            self.norm_ = float(np.abs(components).max()) or 1.0
+            components = components / self.norm_
+        return self._pad(components)
 
-    def _reduce_transform(self, X: NDArray[Any]) -> NDArray[np.float64]:  # noqa: N803
+    def _reduce_transform(self, X: NDArray[Any]) -> NDArray[np.float64]:
         """Apply the fitted reduction chain."""
         reduced = self.scaler_.transform(X) if self.scaler_ else X
         if self.pca_ is None:
             return reduced
-        return self._pad(self.pca_.transform(reduced))
+        components = self.pca_.transform(reduced)
+        if self.normalise:
+            components = components / self.norm_
+        return self._pad(components)
 
-    def _pad(self, X: NDArray[Any]) -> NDArray[np.float64]:  # noqa: N803
+    def _pad(self, X: NDArray[Any]) -> NDArray[np.float64]:
         """Pad with zeros when fewer components exist than qubits."""
         if X.shape[1] == self.n_qubits:
             return X
@@ -225,11 +238,7 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
         padded[:, : X.shape[1]] = X
         return padded
 
-    def fit(
-        self,
-        X: ArrayLike,  # noqa: N803
-        y: ArrayLike,
-    ) -> QuantumKernelClassifier:
+    def fit(self, X: ArrayLike, y: ArrayLike) -> QuantumKernelClassifier:
         """Fit the reducer and the support vector machine.
 
         Args:
@@ -294,7 +303,7 @@ class QuantumKernelClassifier(ClassifierMixin, BaseEstimator):
                 direction,
             )
 
-    def predict(self, X: ArrayLike) -> NDArray[Any]:  # noqa: N803
+    def predict(self, X: ArrayLike) -> NDArray[Any]:
         """Predict class labels.
 
         Args:
