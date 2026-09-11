@@ -28,7 +28,7 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 from geoq.datasets import load_dataset
 from geoq.evaluation.protocol import evaluate
@@ -110,13 +110,20 @@ def main(dataset_name: str = "bci_iv_2a_lr") -> None:
         flush=True,
     )
 
+    #  MLPClassifier's early-stopping path calls numpy.isnan on its own
+    #  predictions, which raises a TypeError when the labels are strings
+    #  such as 'left_hand'. Encoding them to integers avoids it, and leaves
+    #  every metric unchanged: accuracy and kappa depend on agreement
+    #  between predicted and true labels, not on the labels' values.
+    labels = LabelEncoder().fit_transform(data.labels)
+
     splitter = LeaveOneSubjectOut()
     records = []
     for name, model in build_models().items():
         result = evaluate(
             model,
             tangent,
-            data.labels,
+            labels,
             groups=data.subjects,
             splitter=splitter,
             metrics=("accuracy", "kappa"),
