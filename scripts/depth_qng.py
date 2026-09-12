@@ -50,7 +50,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scripts.hybrid import ReuploadingClassifier
 from sklearn.decomposition import PCA
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import LabelEncoder, MaxAbsScaler, StandardScaler
@@ -60,6 +59,14 @@ from geoq.evaluation.protocol import evaluate
 from geoq.evaluation.splitters import LeaveOneSubjectOut
 from geoq.features.covariance import Covariances
 from geoq.features.tangent_space import TangentSpace
+
+#  The repository root is added explicitly so that this script runs the same
+#  way whether it is invoked from the root, from the scripts directory, or
+#  from a notebook. Relying on the working directory produces a script that
+#  works in one session and fails in the next for no visible reason.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.hybrid import ReuploadingClassifier
 
 CACHE = "/content/drive/MyDrive/GeoQ_workspace/cache"
 RESULTS = Path(
