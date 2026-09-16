@@ -25,12 +25,26 @@ p-value alone.
 
 Replication on a second dataset
 --------------------------------
-PhysioNet MI provides a different montage, paradigm and participant group.
+Dataset 2b provides a different montage and recording protocol, and has one
+property that suits this paper in particular. Three electrodes give exactly
+six tangent-space features, so at six qubits the circuit receives every
+feature and no reduction is applied. The confound this paper is about, a
+quantum branch seeing fewer inputs than its classical comparator, is absent
+by construction rather than controlled for, which makes the second dataset a
+different test rather than a repeat of the first.
+
+PhysioNet MI was attempted first and is not used. Every model evaluated on
+it scored at chance, including both classical ones: the circuit reached
+-0.002, the classical models 0.034 and 0.000. A dataset on which nothing
+works cannot discriminate between methods, so reporting it as a replication
+would be misleading in either direction. The cross-dataset analysis in the
+companion study found the same weakness, with raw kappa between 0.04 and
+0.12 against 0.16 to 0.29 on dataset 2a.
+
 Only the four configurations that carry the paper's claims are repeated, at
-the width and depth already established on dataset 2a: the circuit, the
-circuit without entangling gates, the best classical comparator and the
-smallest classical model that matched the circuit. Re-tuning depth on the
-second dataset would make it a second experiment rather than a replication.
+the depth established on dataset 2a. Re-tuning on the second dataset would
+make it a second experiment rather than a replication, and would allow the
+favourable configuration to be selected twice.
 """
 
 from __future__ import annotations
@@ -66,15 +80,34 @@ RESULTS = Path(
 )
 RESULTS.mkdir(parents=True, exist_ok=True)
 
-QUBITS, LAYERS = 8, 9
-N_PHYSIONET_SUBJECTS = 12
+#: Circuit width per dataset. Dataset 2a has 22 channels and so 253
+#: tangent-space features, which must be reduced. Dataset 2b has three
+#: channels and six features, so six qubits take all of them and the
+#: reduction step is a no-op.
+WIDTHS = {"bci_iv_2a_lr": 8, "bci_iv_2b": 6}
+
+#: Depth is held at the value established on dataset 2a, deliberately.
+LAYERS = 9
 
 
-def build_mlp(n_hidden: int):
-    """Classical pipeline seeing exactly the features the circuit sees."""
+def build_mlp(n_hidden: int, n_qubits: int, n_features: int):
+    """Classical pipeline seeing exactly the features the circuit sees.
+
+    Args:
+        n_hidden: Width of the hidden layer.
+        n_qubits: Circuit width, and the number of components retained.
+        n_features: Dimension of the input features.
+
+    Returns:
+        The pipeline.
+    """
+    #  PCA to more components than the data has is an error, and where the
+    #  two are equal the step is a rotation that changes nothing. Both are
+    #  handled by capping the component count.
+    components = min(n_qubits, n_features)
     return make_pipeline(
         StandardScaler(),
-        PCA(QUBITS, random_state=0),
+        PCA(components, random_state=0),
         MaxAbsScaler(),
         MLPClassifier(
             hidden_layer_sizes=(n_hidden,),
@@ -85,13 +118,23 @@ def build_mlp(n_hidden: int):
     )
 
 
-def models() -> dict:
-    """The four configurations that carry the paper's claims."""
+def models(n_qubits: int, n_features: int) -> dict:
+    """The four configurations that carry the paper's claims.
+
+    Args:
+        n_qubits: Circuit width for this dataset.
+        n_features: Dimension of the tangent-space features.
+
+    Returns:
+        Mapping from name to unfitted estimator.
+    """
     return {
-        "hybrid": ReuploadingClassifier(n_qubits=QUBITS, n_layers=LAYERS),
-        "hybrid_no_entangle": UnentangledReuploading(n_qubits=QUBITS, n_layers=LAYERS),
-        "mlp_24": build_mlp(24),
-        "mlp_8": build_mlp(8),
+        "hybrid": ReuploadingClassifier(n_qubits=n_qubits, n_layers=LAYERS),
+        "hybrid_no_entangle": UnentangledReuploading(
+            n_qubits=n_qubits, n_layers=LAYERS
+        ),
+        "mlp_24": build_mlp(24, n_qubits, n_features),
+        "mlp_8": build_mlp(8, n_qubits, n_features),
     }
 
 
@@ -116,8 +159,18 @@ def run_dataset(name: str, **kwargs) -> pd.DataFrame:
     tangent = TangentSpace().fit_transform(covariances)
     labels = LabelEncoder().fit_transform(data.labels)
 
+    n_qubits = WIDTHS[name]
+    n_features = tangent.shape[1]
+    reduced = min(n_qubits, n_features)
+    print(
+        f"    {n_features} tangent features, {n_qubits} qubits, "
+        f"{reduced} components retained"
+        f"{' (no reduction)' if reduced == n_features else ''}",
+        flush=True,
+    )
+
     rows = []
-    for label, model in models().items():
+    for label, model in models(n_qubits, n_features).items():
         started = time.perf_counter()
         result = evaluate(
             model,
@@ -203,11 +256,9 @@ def main() -> None:
     first = run_dataset("bci_iv_2a_lr")
 
     print("\n" + "=" * 72)
-    print("PhysioNet MI: different montage, paradigm and participants")
+    print("Dataset 2b: three electrodes, six features, no reduction applied")
     print("=" * 72)
-    second = run_dataset(
-        "physionet_mi", subjects=list(range(1, N_PHYSIONET_SUBJECTS + 1))
-    )
+    second = run_dataset("bci_iv_2b")
 
     comparisons = [
         ("mlp_24", "hybrid"),
@@ -215,7 +266,7 @@ def main() -> None:
         ("hybrid", "mlp_8"),
     ]
     rows = []
-    for name, frame in (("bci_iv_2a_lr", first), ("physionet_mi", second)):
+    for name, frame in (("bci_iv_2a_lr", first), ("bci_iv_2b", second)):
         for a, b in comparisons:
             if a in set(frame.model) and b in set(frame.model):
                 rows.append({"dataset": name, **paired_comparison(frame, a, b)})
