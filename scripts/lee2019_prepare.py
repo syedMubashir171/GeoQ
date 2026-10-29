@@ -56,6 +56,10 @@ MIN_FREE_GB = 5.0
 SCAN_ROOTS = (Path.home(), Path("/tmp"))
 #: Smaller files (configs, manifests) are left alone.
 MIN_DELETE_BYTES = 1_000_000
+#: Never touched, whatever appears in them: Colab's Google Drive client
+#: stages every file written to Drive in a local cache under the home
+#: folder, and deleting that copy loses the file before it uploads.
+PROTECTED = ("/content/drive", "/.config/", "DriveFS", "/.ipython/", "/.local/")
 
 
 def snapshot() -> set[Path]:
@@ -65,7 +69,8 @@ def snapshot() -> set[Path]:
         if root.exists():
             for path in root.rglob("*"):
                 try:
-                    if path.is_file() and "/content/drive" not in str(path):
+                    text = str(path)
+                    if path.is_file() and not any(p in text for p in PROTECTED):
                         files.add(path)
                 except OSError:
                     continue
@@ -118,6 +123,11 @@ def main() -> None:
                 f"{EXPECTED_CHANNELS}; the paradigm's channel selection changed."
             )
         covariances = Covariances(estimator="oas").fit_transform(epochs)
+        n_samples = epochs.shape[2]
+        del epochs
+        #  The raw files are deleted before anything is written to Drive, so
+        #  the deletion can never reach a file that is still uploading.
+        freed = delete_new(before)
         #  Written to a temporary name first so an interrupted save cannot
         #  leave a truncated file that would later be treated as complete.
         partial = target.with_suffix(".partial.npz")
@@ -125,7 +135,10 @@ def main() -> None:
             partial, covariances=covariances, labels=np.asarray(labels).astype(str)
         )
         partial.replace(target)
-        freed = delete_new(before)
+        #  Read back immediately: a file that does not load is not kept.
+        with np.load(target) as check:
+            if check["covariances"].shape != covariances.shape:
+                raise RuntimeError(f"Subject {subject}: saved file does not match.")
         free = shutil.disk_usage(Path.home()).free / 1e9
         if free < MIN_FREE_GB:
             raise SystemExit(
@@ -134,7 +147,7 @@ def main() -> None:
             )
         print(
             f"  subject {subject:2d}: {len(labels)} trials, "
-            f"{epochs.shape[2]} samples, freed {freed:.2f} GB, free {free:.1f} GB "
+            f"{n_samples} samples, freed {freed:.2f} GB, free {free:.1f} GB "
             f"({(time.perf_counter() - started) / 60:.1f} min)",
             flush=True,
         )
