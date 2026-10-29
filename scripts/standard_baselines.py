@@ -56,7 +56,7 @@ from geoq.datasets import load_dataset
 from geoq.features.covariance import Covariances
 from geoq.features.tangent_space import TangentSpace
 
-C_GRID = (0.001, 0.01, 0.1, 1.0, 10.0, 100.0)
+C_GRID = (1e-5, 1e-4, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0)
 INNER_FOLDS = 3
 BASELINES = ("ts_lr", "ts_slda", "mdm")
 
