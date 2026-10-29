@@ -51,14 +51,43 @@ EXPECTED_CHANNELS = 62
 MIN_FREE_GB = 5.0
 
 
-def delete_raw(paths) -> float:
-    """Remove a subject's downloaded files; return gigabytes freed."""
+#: Folders searched for files that appear while a subject downloads. The
+#: mounted Drive is excluded: it is slow to scan and holds only our outputs.
+SCAN_ROOTS = (Path.home(), Path("/tmp"))
+#: Smaller files (configs, manifests) are left alone.
+MIN_DELETE_BYTES = 1_000_000
+
+
+def snapshot() -> set[Path]:
+    """Every file currently under the scan roots, outside the Drive mount."""
+    files = set()
+    for root in SCAN_ROOTS:
+        if root.exists():
+            for path in root.rglob("*"):
+                try:
+                    if path.is_file() and "/content/drive" not in str(path):
+                        files.add(path)
+                except OSError:
+                    continue
+    return files
+
+
+def delete_new(before: set[Path]) -> float:
+    """Delete large files created since ``before``; return gigabytes freed.
+
+    MOABB's reported paths do not always point at the files its download
+    backend writes, so the files to remove are found by difference: whatever
+    appeared on disk while this subject was loaded.
+    """
     freed = 0.0
-    for item in paths:
-        path = Path(item)
-        if path.is_file():
-            freed += path.stat().st_size / 1e9
-            path.unlink()
+    for path in snapshot() - before:
+        try:
+            size = path.stat().st_size
+            if size >= MIN_DELETE_BYTES:
+                path.unlink()
+                freed += size / 1e9
+        except OSError:
+            continue
     return freed
 
 
@@ -81,7 +110,7 @@ def main() -> None:
             print(f"  subject {subject:2d} cached", flush=True)
             continue
         started = time.perf_counter()
-        raw_paths = dataset.data_path(subject)
+        before = snapshot()
         epochs, labels, _ = paradigm.get_data(dataset=dataset, subjects=[subject])
         if epochs.shape[1] != EXPECTED_CHANNELS:
             raise RuntimeError(
@@ -96,7 +125,7 @@ def main() -> None:
             partial, covariances=covariances, labels=np.asarray(labels).astype(str)
         )
         partial.replace(target)
-        freed = delete_raw(raw_paths if isinstance(raw_paths, list) else [raw_paths])
+        freed = delete_new(before)
         free = shutil.disk_usage(Path.home()).free / 1e9
         if free < MIN_FREE_GB:
             raise SystemExit(
