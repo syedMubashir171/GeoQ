@@ -1,47 +1,49 @@
-"""Feasibility check for a third, larger motor-imagery cohort.
+"""Leave-one-subject-out feasibility check for a larger motor-imagery cohort.
 
 Why
 ---
-Nine subject records per dataset is the paper's main limitation: the
-primary comparison can only bound a circuit advantage, and the evidence for
-entanglement beyond routing rests on a pooled secondary test. A cohort with
-around fifty subjects would let the same paired tests resolve differences
-of a few hundredths in kappa.
+The first probe trained on one subject and tested on another. With 64
+channels the tangent vector has 2080 dimensions, so a single subject's 200
+trials cannot fit a transferable decoder, and a chance result there says
+little. The question that matters for the paper is whether a decoder
+trained on many subjects transfers to a new one, which is what
+leave-one-subject-out measures.
 
-Cho et al. (2017, GigaScience) recorded left- and right-hand motor imagery
-from 52 subjects with 64 EEG channels, and MOABB distributes it as
-``Cho2017``. Before committing a day of compute to it, this script checks
-what it costs on Colab and whether there is cross-subject signal under our
-exact preprocessing (8-30 Hz, 0.5-2.5 s, OAS covariances, tangent space).
-The last cohort we tried, PhysioNet, gave chance for every model, so the
-signal check matters.
+This probe loads the first N subjects of a MOABB cohort with the paper's
+preprocessing (8-30 Hz, 0.5-2.5 s after the cue, OAS covariances) and runs
+leave-one-subject-out among them with two standard decoders:
 
-What it does (minutes, plus the download of two subjects)
------------------------------------------------------------
-1. Loads two subjects through MOABB with the paper's preprocessing.
-2. Reports channels, trials per subject, class balance, sampling rate,
-   download time and the disk used per subject, and extrapolates to the
-   full cohort.
-3. Trains tangent-space LDA on one subject and tests on the other, in
-   both directions, as a crude check that a decoder transfers.
+ts_slda  tangent space + shrinkage linear discriminant analysis
+ts_lr    tangent space + standardisation + logistic regression (C = 0.01)
 
-Usage
------
-    !python scripts/cohort_probe.py
+The reference point is fitted on the training subjects of each fold.
 
-Paste the whole output.
+Decision rule
+-------------
+If the mean kappa of the better decoder stays below about 0.10, the cohort
+sits too close to chance for paired tests between quantum and classical
+models to gain power from its size, and we do not run it.
+
+Usage (repository root not required)
+------------------------------------
+    !python scripts/cohort_probe.py Cho2017 10
+    !python scripts/cohort_probe.py Lee2019_MI 10
+
+The first argument is the MOABB dataset class, the second the number of
+subjects to load (default 10).
 """
 
 from __future__ import annotations
 
 import shutil
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
-PROBE_SUBJECTS = (1, 2)
-FULL_COHORT = 52
+DATASET = sys.argv[1] if len(sys.argv) > 1 else "Cho2017"
+N_SUBJECTS = int(sys.argv[2]) if len(sys.argv) > 2 else 10
 
 
 def folder_size(path: Path) -> float:
@@ -52,69 +54,81 @@ def folder_size(path: Path) -> float:
 
 
 def main() -> None:
-    """Load two subjects, report costs, and test cross-subject transfer."""
+    """Load N subjects, report costs, and run leave-one-subject-out."""
     import mne
     import moabb
-    from moabb.datasets import Cho2017
+    import moabb.datasets as moabb_datasets
     from moabb.paradigms import LeftRightImagery
     from pyriemann.estimation import Covariances
     from pyriemann.tangentspace import TangentSpace
     from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+    from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import cohen_kappa_score
-    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
 
     print(f"MOABB {moabb.__version__}, MNE {mne.__version__}")
-    dataset = Cho2017()
-    print(
-        f"Cho2017 subjects available in MOABB: {len(dataset.subject_list)} "
-        f"(of {FULL_COHORT} recorded)"
-    )
+    dataset = getattr(moabb_datasets, DATASET)()
+    available = list(dataset.subject_list)
+    chosen = available[:N_SUBJECTS]
+    print(f"{DATASET}: {len(available)} subjects available; probing {chosen}")
 
     data_root = Path(mne.get_config("MNE_DATA") or Path.home() / "mne_data")
     before = folder_size(data_root)
     paradigm = LeftRightImagery(fmin=8.0, fmax=30.0, tmin=0.5, tmax=2.5)
-
     started = time.perf_counter()
-    epochs, labels, meta = paradigm.get_data(
-        dataset=dataset, subjects=list(PROBE_SUBJECTS)
-    )
+    epochs, labels, meta = paradigm.get_data(dataset=dataset, subjects=chosen)
     seconds = time.perf_counter() - started
     used = folder_size(data_root) - before
 
-    print(f"\nLoaded subjects {PROBE_SUBJECTS} in {seconds / 60:.1f} min")
-    print(f"  epochs shape   : {epochs.shape} (trials, channels, samples)")
     names, counts = np.unique(labels, return_counts=True)
-    print(f"  classes        : {dict(zip(names, counts, strict=True))}")
-    for subject in PROBE_SUBJECTS:
-        mask = (meta.subject == subject).to_numpy()
-        print(f"  subject {subject}: {mask.sum()} trials")
-    print(f"  disk used      : {used:.2f} GB for {len(PROBE_SUBJECTS)} subjects")
-    per_subject = used / len(PROBE_SUBJECTS)
-    cohort = len(dataset.subject_list)
     print(
-        f"  extrapolated   : ~{per_subject * cohort:.1f} GB and "
-        f"~{seconds / len(PROBE_SUBJECTS) * cohort / 60:.0f} min to download "
-        f"all {cohort} subjects"
+        f"\nLoaded in {seconds / 60:.1f} min; epochs {epochs.shape} "
+        f"(trials, channels, samples)"
     )
-    free = (
-        shutil.disk_usage(data_root if data_root.exists() else Path.home()).free / 1e9
+    print(f"  classes      : {dict(zip(names, counts, strict=True))}")
+    print(
+        f"  disk used    : {used:.2f} GB; extrapolated to all "
+        f"{len(available)} subjects: ~{used / len(chosen) * len(available):.1f} GB"
     )
-    print(f"  free disk now  : {free:.1f} GB")
+    free = shutil.disk_usage(Path.home()).free / 1e9
+    print(f"  free disk    : {free:.1f} GB")
 
-    #  Crude transfer check: one subject trains, the other tests.
-    model = make_pipeline(
-        Covariances("oas"),
-        TangentSpace(),
-        LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto"),
-    )
+    covariances = Covariances("oas").fit_transform(epochs)
     subjects = meta.subject.to_numpy()
-    print("\nCross-subject tangent-space LDA (train -> test)")
-    for train_subject, test_subject in (PROBE_SUBJECTS, PROBE_SUBJECTS[::-1]):
-        train, test = subjects == train_subject, subjects == test_subject
-        model.fit(epochs[train], labels[train])
-        kappa = cohen_kappa_score(labels[test], model.predict(epochs[test]))
-        print(f"  {train_subject} -> {test_subject}: kappa {kappa:+.3f}")
-    print("\nDone. Paste this output in full.")
+    scores = {"ts_slda": [], "ts_lr": []}
+    print("\nLeave-one-subject-out kappa")
+    for held_out in chosen:
+        train, test = subjects != held_out, subjects == held_out
+        reference = TangentSpace(metric="riemann").fit(covariances[train])
+        x_train = reference.transform(covariances[train])
+        x_test = reference.transform(covariances[test])
+
+        slda = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
+        slda.fit(x_train, labels[train])
+        scores["ts_slda"].append(cohen_kappa_score(labels[test], slda.predict(x_test)))
+
+        scaler = StandardScaler().fit(x_train)
+        logistic = LogisticRegression(C=0.01, max_iter=5000)
+        logistic.fit(scaler.transform(x_train), labels[train])
+        scores["ts_lr"].append(
+            cohen_kappa_score(labels[test], logistic.predict(scaler.transform(x_test)))
+        )
+        print(
+            f"  subject {held_out:3d}: ts_slda {scores['ts_slda'][-1]:+.3f}  "
+            f"ts_lr {scores['ts_lr'][-1]:+.3f}"
+        )
+
+    print("\nMean (sd) over held-out subjects")
+    for name, values in scores.items():
+        values = np.asarray(values)
+        print(
+            f"  {name:8s} {values.mean():+.3f} ({values.std(ddof=1):.3f}); "
+            f"above 0.10 for {(values > 0.10).sum()} of {values.size}"
+        )
+    best = max(np.mean(v) for v in scores.values())
+    verdict = "worth running" if best >= 0.10 else "too close to chance to add power"
+    print(f"\nVerdict by the 0.10 rule: {verdict} (best mean {best:+.3f})")
+    print("Done. Paste this output in full.")
 
 
 if __name__ == "__main__":
